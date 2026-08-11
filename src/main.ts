@@ -22,6 +22,7 @@ import {
 } from "./capture";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
 import { createPanel, updateStatus } from "./panel";
+import { stitchFullPage } from "./stitch";
 import html2canvas from "html2canvas";
 
 export interface AppContext {
@@ -140,8 +141,10 @@ export async function executeStep(ctx: AppContext): Promise<void> {
 
   const reader = getReaderInfo(document, ctx.config.chapterSelector, ctx.config.nextSelector);
 
-  // 章节模式专属：平滑滚动到底部触发全章加载
-  if (reader.mode === "chapter") {
+  // 章节模式：仅"原生 Canvas 引擎"需要先平滑滚动到底部触发整章 DOM 渲染。
+  // html2canvas 引擎的章节模式改为"边滚动边分段截图并拼接"，不预滚动到底，
+  // 否则虚拟渲染会把中间内容清空导致截图空白。
+  if (reader.mode === "chapter" && ctx.config.engineMode === "canvas") {
     updateStatus(ctx.statusEl, "正在平滑细致滚动页面以彻底渲染全部内容...");
     const scrollSuccess = await smoothScrollToBottom(ctx);
     if (!scrollSuccess) return;
@@ -257,27 +260,83 @@ export async function executeStep(ctx: AppContext): Promise<void> {
         };
       }
 
-      const renderedCanvas = await html2canvas(h2cTarget, h2cOptions);
+      // ========== 章节模式：边滚动边分段截图并拼接成一张长图 ==========
+      // 微信读书章节虚拟渲染，一次性整章渲染会因中间内容清空而空白，
+      // 因此逐段滚动截图后用 stitchFullPage 拼接。
+      let stitched = false;
+      if (reader.mode === "chapter") {
+        updateStatus(ctx.statusEl, "[html2canvas] 章节模式：分段滚动截图并拼接长图中...");
+
+        const stitchedCanvas = await stitchFullPage(
+          ctx,
+          (el, options) =>
+            html2canvas(el, options as Parameters<typeof html2canvas>[1]),
+          {
+            target: h2cTarget,
+            viewportHeight: window.innerHeight,
+            overlapRatio: 0.15,
+            renderDelay: 300,
+            h2cOptions,
+            // 每段滚动后烘焙该视口内的插图，避免 html2canvas 跨域污染画布
+            beforeCapture: async () => {
+              const imgs = getVisibleImages(h2cTarget);
+              if (imgs.length === 0) return [];
+              return bakeImagesToBase64(imgs);
+            },
+            afterCapture: (payload) => {
+              if (Array.isArray(payload)) {
+                restoreImageSources(
+                  payload as { el: HTMLImageElement; src: string }[],
+                );
+              }
+            },
+          },
+          (p) => {
+            updateStatus(
+              ctx.statusEl,
+              `[html2canvas] 章节拼接中 第 ${p.index + 1} 段 (${Math.min(
+                100,
+                Math.round(((p.scrollY + window.innerHeight) / p.totalHeight) * 100),
+              )}%)`,
+            );
+          },
+        );
+
+        if (!ctx.isRunning) return;
+
+        const dataUrl = stitchedCanvas.toDataURL("image/png");
+        downloadDataUrl(dataUrl, `screenshot_chapter_${pageNum}.png`);
+        GM_setValue("pageCounter", pageNum + 1);
+        updateStatus(ctx.statusEl, `[html2canvas] 章节长图拼接完成，已保存第 ${pageNum} 章`);
+        stitched = true;
+      }
+
+      const renderedCanvas = stitched
+        ? null
+        : await html2canvas(h2cTarget, h2cOptions);
 
       if (!ctx.isRunning) return;
 
-      // 只在"水平模式且含2个Canvas"时对半切分；章节模式绝不切分
-      if (reader.mode === "horizontal" && innerCanvasCount === 2) {
-        const originalWidth = renderedCanvas.width;
-        const originalHeight = renderedCanvas.height;
-        const halfWidth = originalWidth / 2;
+      // 章节模式已在"stitched"路径拼接导出，跳过下方水平/单页整图逻辑
+      if (!stitched) {
+        // 只在"水平模式且含2个Canvas"时对半切分
+        if (reader.mode === "horizontal" && innerCanvasCount === 2) {
+          const originalWidth = renderedCanvas!.width;
+          const originalHeight = renderedCanvas!.height;
+          const halfWidth = originalWidth / 2;
 
-        cropCanvasAndDownload(renderedCanvas, 0, 0, halfWidth, originalHeight, `screenshot_page_${pageNum}.png`);
-        await new Promise((r) => setTimeout(r, 300));
-        cropCanvasAndDownload(renderedCanvas, halfWidth, 0, halfWidth, originalHeight, `screenshot_page_${pageNum + 1}.png`);
+          cropCanvasAndDownload(renderedCanvas!, 0, 0, halfWidth, originalHeight, `screenshot_page_${pageNum}.png`);
+          await new Promise((r) => setTimeout(r, 300));
+          cropCanvasAndDownload(renderedCanvas!, halfWidth, 0, halfWidth, originalHeight, `screenshot_page_${pageNum + 1}.png`);
 
-        GM_setValue("pageCounter", pageNum + 2);
-        updateStatus(ctx.statusEl, `[html2canvas] 水平双页切分已保存第 ${pageNum} 和 ${pageNum + 1} 页`);
-      } else {
-        const dataUrl = renderedCanvas.toDataURL("image/png");
-        downloadDataUrl(dataUrl, `screenshot_page_${pageNum}.png`);
-        GM_setValue("pageCounter", pageNum + 1);
-        updateStatus(ctx.statusEl, `[html2canvas] 已成功导出整页/整章长图第 ${pageNum} 页`);
+          GM_setValue("pageCounter", pageNum + 2);
+          updateStatus(ctx.statusEl, `[html2canvas] 水平双页切分已保存第 ${pageNum} 和 ${pageNum + 1} 页`);
+        } else {
+          const dataUrl = renderedCanvas!.toDataURL("image/png");
+          downloadDataUrl(dataUrl, `screenshot_page_${pageNum}.png`);
+          GM_setValue("pageCounter", pageNum + 1);
+          updateStatus(ctx.statusEl, `[html2canvas] 已成功导出整页/整章长图第 ${pageNum} 页`);
+        }
       }
     } catch (err) {
       console.error("html2canvas 渲染失败:", err);
