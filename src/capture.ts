@@ -42,17 +42,22 @@ export function cropCanvasAndDownload(
 }
 
 /**
- * 在 Canvas 表面重构绝对定位的插图（AABB 碰撞合并）
- * 使用 computeDrawRect 计算坐标，仅绘制与画布重叠的插图。
+ * 在目标画布上按物理碰撞算法绘制与参考画布重叠的插图。
+ *
+ * @param drawCanvas  目标绘制画布（通常是内存中的克隆画布，未插入 DOM，rect 全 0）
+ * @param refCanvas   用于坐标定位的参考画布（必须是仍在页面 DOM 中的原始画布）
+ * @param images      待合并的可见插图
  */
 export function mergeImagesToCanvas(
-  canvas: HTMLCanvasElement,
+  drawCanvas: HTMLCanvasElement,
+  refCanvas: HTMLCanvasElement,
   images: HTMLImageElement[],
 ): void {
-  const ctx = canvas.getContext("2d");
+  const ctx = drawCanvas.getContext("2d");
   if (!ctx) return;
 
-  const rectCanvas = canvas.getBoundingClientRect();
+  // 必须用"仍在 DOM 中的原始画布"计算几何，克隆画布不在 DOM 中 rect 全为 0
+  const rectCanvas = refCanvas.getBoundingClientRect();
   const canvasRect = {
     left: rectCanvas.left,
     top: rectCanvas.top,
@@ -63,6 +68,9 @@ export function mergeImagesToCanvas(
   };
 
   images.forEach((img) => {
+    // 跳过未就绪的图片，避免绘制空白或抛错
+    if (img.complete && img.naturalWidth === 0) return;
+
     const rectImg = img.getBoundingClientRect();
     const imgRect = {
       left: rectImg.left,
@@ -73,25 +81,39 @@ export function mergeImagesToCanvas(
       height: rectImg.height,
     };
 
-    const draw = computeDrawRect(canvasRect, imgRect, canvas.width, canvas.height);
+    const draw = computeDrawRect(
+      canvasRect,
+      imgRect,
+      drawCanvas.width,
+      drawCanvas.height,
+    );
     if (draw) {
-      ctx.drawImage(img, draw.x, draw.y, draw.w, draw.h);
+      try {
+        ctx.drawImage(img, draw.x, draw.y, draw.w, draw.h);
+      } catch (e) {
+        // 单张图片绘制失败（如画布被污染）不阻断整体导出
+        console.error("插图合并失败，跳过该图片:", img.src, e);
+      }
     }
   });
 }
 
-/** 内存克隆合并算法：克隆画布并把插图合并上去，返回 DataURL */
+/**
+ * 内存克隆合并算法：克隆"原始画布"并把插图合并上去，返回 DataURL。
+ *
+ * 关键：合并定位用的是原始画布（refCanvas，在 DOM 中），而非克隆画布。
+ */
 export function getMergedCanvasDataUrl(
-  canvas: HTMLCanvasElement,
+  refCanvas: HTMLCanvasElement,
   images: HTMLImageElement[],
 ): string {
   const clone = document.createElement("canvas");
-  clone.width = canvas.width;
-  clone.height = canvas.height;
+  clone.width = refCanvas.width;
+  clone.height = refCanvas.height;
   const ctx = clone.getContext("2d");
   if (!ctx) return "";
-  ctx.drawImage(canvas, 0, 0);
-  mergeImagesToCanvas(clone, images);
+  ctx.drawImage(refCanvas, 0, 0);
+  mergeImagesToCanvas(clone, refCanvas, images);
   return clone.toDataURL("image/png");
 }
 
@@ -126,12 +148,47 @@ export async function bakeImagesToBase64(
         reader.readAsDataURL(blob);
       });
 
+      // 烘焙为 base64（不强制等待解码，交给合并阶段容错处理）
       img.src = base64Data;
     } catch (err) {
       console.error("图片烘焙失败，保留原地址:", originalSrc, err);
     }
   }
   return originalSources;
+}
+
+/**
+ * 等待图片完成解码（用于 drawImage 前保证图片可绘制）。
+ * 优先使用 img.decode()，兼容降级到 onload/onerror。
+ */
+export function waitForImageLoad(img: HTMLImageElement): Promise<void> {
+  // 已自然宽度 > 0 且完整，说明已加载完成
+  if (img.complete && img.naturalWidth > 0) {
+    return Promise.resolve();
+  }
+
+  if (typeof img.decode === "function") {
+    return img.decode().catch(() => {
+      // decode 失败（如损坏图片），退化为等待 load 事件
+      return waitForImageEvent(img);
+    });
+  }
+
+  return waitForImageEvent(img);
+}
+
+function waitForImageEvent(img: HTMLImageElement): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+    img.addEventListener("load", done, { once: true });
+    img.addEventListener("error", done, { once: true });
+  });
 }
 
 /** 还原图片的原始 src 地址 */

@@ -116,6 +116,24 @@ function collectCanvases(target: Element): HTMLCanvasElement[] {
   return list;
 }
 
+/**
+ * 收集待导出的全部画布。
+ *
+ * 优先用 targetSelector 在整页收集（水平双页时一个容器内可能含 2 个 canvas），
+ * 若一个都匹配不到则回退到 target 内部的 canvas。
+ */
+function collectAllCanvases(
+  target: Element,
+  targetSelector: string,
+  doc: Document = document,
+): HTMLCanvasElement[] {
+  const matched = Array.from(doc.querySelectorAll<HTMLCanvasElement>(targetSelector));
+  if (matched.length > 0) {
+    return matched;
+  }
+  return collectCanvases(target);
+}
+
 /** 执行单步（一次截图 + 跳转） */
 export async function executeStep(ctx: AppContext): Promise<void> {
   if (!ctx.isRunning) return;
@@ -164,7 +182,8 @@ export async function executeStep(ctx: AppContext): Promise<void> {
   // ========== 核心：双引擎逻辑分支 ==========
   if (ctx.config.engineMode === "canvas") {
     // ---- 引擎一：原生 Canvas 模式 ----
-    const engineCanvases = collectCanvases(target);
+    // 收集全部画布：水平双页时一个容器内通常有 2 个 canvas，必须全部导出
+    const engineCanvases = collectAllCanvases(target, ctx.config.targetSelector);
     if (engineCanvases.length === 0) {
       finishTask(ctx, "原生 Canvas 模式下未找到可用的 Canvas 画布");
       restoreImageSources(bakedSources);
@@ -228,7 +247,12 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           const clonedCanvases = clonedTarget.querySelectorAll("canvas");
           const clonedVisibleImages = getVisibleImages(clonedTarget);
           clonedCanvases.forEach((canvas) => {
-            mergeImagesToCanvas(canvas as HTMLCanvasElement, clonedVisibleImages);
+            // 克隆 DOM 中的 canvas 具有有效布局，可直接作为参考画布
+            mergeImagesToCanvas(
+              canvas as HTMLCanvasElement,
+              canvas as HTMLCanvasElement,
+              clonedVisibleImages,
+            );
           });
         };
       }
