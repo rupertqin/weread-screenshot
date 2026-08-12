@@ -1,6 +1,6 @@
 {
   "name": "weread-screenshot",
-  "version": "4.0.0",
+  "version": "0.1.0",
   "description": "微信读书自动截图 (智能双引擎插图完美融合版) - 模块化 + 单元测试工程化版本",
   "type": "module",
   "private": true,

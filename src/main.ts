@@ -19,6 +19,7 @@ import {
   mergeImagesToCanvas,
   getMergedCanvasDataUrl,
   cropCanvasAndDownload,
+  createCachedImageBaker,
 } from "./capture";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
 import { createPanel, updateStatus } from "./panel";
@@ -267,6 +268,9 @@ export async function executeStep(ctx: AppContext): Promise<void> {
       if (reader.mode === "chapter") {
         updateStatus(ctx.statusEl, "[html2canvas] 章节模式：分段滚动截图并拼接长图中...");
 
+        // 每个章节的拼接会话共享一个插图烘焙缓存，避免相邻分段重复 fetch
+        const bakeWithCache = createCachedImageBaker();
+
         const stitchedCanvas = await stitchFullPage(
           ctx,
           (el, options) =>
@@ -274,14 +278,16 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           {
             target: h2cTarget,
             viewportHeight: window.innerHeight,
-            overlapRatio: 0.15,
-            renderDelay: 300,
+            // 增大步长（减小重叠），减少分段渲染次数以提速
+            overlapRatio: 0.05,
+            // 虚拟渲染等待时间调短
+            renderDelay: 80,
             h2cOptions,
-            // 每段滚动后烘焙该视口内的插图，避免 html2canvas 跨域污染画布
+            // 每段滚动后烘焙该视口内的插图（带缓存），避免 html2canvas 跨域污染画布
             beforeCapture: async () => {
               const imgs = getVisibleImages(h2cTarget);
               if (imgs.length === 0) return [];
-              return bakeImagesToBase64(imgs);
+              return bakeWithCache(imgs);
             },
             afterCapture: (payload) => {
               if (Array.isArray(payload)) {

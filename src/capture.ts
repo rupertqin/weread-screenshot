@@ -199,3 +199,56 @@ export function restoreImageSources(
     item.el.src = item.src;
   });
 }
+
+/**
+ * 创建带缓存的图片烘焙器。
+ *
+ * 在分段截图场景下，相邻分段常包含同一张插图。若每次都 fetch + FileReader，
+ * 会产生大量重复网络与解码开销。此工厂以"原始 src"为键缓存 base64 结果，
+ * 同一张图只 fetch 一次，后续分段直接复用。
+ */
+export function createCachedImageBaker(): (
+  images: HTMLImageElement[],
+) => Promise<{ el: HTMLImageElement; src: string }[]> {
+  const cache = new Map<string, string>();
+
+  return async (images) => {
+    const originalSources: { el: HTMLImageElement; src: string }[] = [];
+
+    for (const img of images) {
+      const originalSrc = img.src;
+      originalSources.push({ el: img, src: originalSrc });
+
+      if (originalSrc.indexOf("data:") === 0) {
+        continue;
+      }
+
+      // 命中缓存：直接复用 base64，无需再次 fetch
+      const cached = cache.get(originalSrc);
+      if (cached) {
+        img.src = cached;
+        continue;
+      }
+
+      try {
+        const response = await fetch(originalSrc);
+        if (!response.ok) throw new Error("Fetch failed");
+
+        const blob = await response.blob();
+        const base64Data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        // 写入缓存并应用
+        cache.set(originalSrc, base64Data);
+        img.src = base64Data;
+      } catch (err) {
+        console.error("图片烘焙失败，保留原地址:", originalSrc, err);
+      }
+    }
+    return originalSources;
+  };
+}

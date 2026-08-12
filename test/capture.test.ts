@@ -3,6 +3,7 @@ import {
   bakeImagesToBase64,
   restoreImageSources,
   waitForImageLoad,
+  createCachedImageBaker,
 } from "../src/capture";
 
 describe("waitForImageLoad - 等待图片解码", () => {
@@ -103,5 +104,49 @@ describe("restoreImageSources - 还原 src", () => {
 
     restoreImageSources(sources);
     expect(img.src).toBe("https://example.com/original.png");
+  });
+});
+
+describe("createCachedImageBaker - 插图烘焙缓存", () => {
+  it("同一张图多次烘焙只 fetch 一次，复用 base64", async () => {
+    const baker = createCachedImageBaker();
+    const blob = new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({ ok: true, blob: async () => blob } as Response);
+
+    // 第一次烘焙：src 换成 base64
+    const img1 = new Image();
+    img1.src = "https://example.com/dup.png";
+    const s1 = await baker([img1]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(img1.src.startsWith("data:")).toBe(true);
+
+    // 还原后，第二次烘焙同一 src：应命中缓存，不再 fetch
+    restoreImageSources(s1);
+    const img2 = new Image();
+    img2.src = "https://example.com/dup.png";
+    await baker([img2]);
+    expect(img2.src.startsWith("data:")).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1); // 仍是 1 次
+
+    fetchMock.mockRestore();
+  });
+
+  it("不同 src 的图片各自独立 fetch", async () => {
+    const baker = createCachedImageBaker();
+    const blob = new Blob([new Uint8Array([1])], { type: "image/png" });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({ ok: true, blob: async () => blob } as Response);
+
+    const a = new Image();
+    a.src = "https://example.com/a.png";
+    const b = new Image();
+    b.src = "https://example.com/b.png";
+    await baker([a, b]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fetchMock.mockRestore();
   });
 });

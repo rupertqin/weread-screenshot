@@ -68,8 +68,8 @@ export async function stitchFullPage(
   onProgress?: (p: StitchProgress) => void,
 ): Promise<HTMLCanvasElement> {
   const { target, viewportHeight } = opts;
-  const overlapRatio = opts.overlapRatio ?? 0.2;
-  const renderDelay = opts.renderDelay ?? 250;
+  const overlapRatio = opts.overlapRatio ?? 0.05;
+  const renderDelay = opts.renderDelay ?? 80;
 
   const scrollEl = getScrollElement();
 

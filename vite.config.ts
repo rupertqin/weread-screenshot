@@ -9,7 +9,7 @@ export default defineConfig({
       userscript: {
         name: "微信读书自动截图 (智能双引擎插图完美融合版)",
         namespace: "https://github.com/weread-screenshot",
-        version: "4.0.0",
+        version: "0.1.0",
         description:
           "双模式并存。修复 html2canvas 章节模式下误切分图片的Bug，强制整章长图导出。支持 AABB 碰撞物理合并与模拟点击。模块化 + 单元测试工程化版本。",
         author: "Assistant",

@@ -63,4 +63,4 @@ pnpm coverage      # 运行测试并输出覆盖率
 
 ## 变更日志
 
-- **v4.0.0**：工程化重构。由单文件 `app.js` 拆分为模块化 TS 工程，引入 `vite-plugin-monkey` 构建与 `Vitest` 单测；html2canvas 改为 CDN 外置（`@require`），产物由 ~530KB 降至 ~23KB。
+- **v0.1.0**：工程化重构。由单文件 `app.js` 拆分为模块化 TS 工程，引入 `vite-plugin-monkey` 构建与 `Vitest` 单测；html2canvas 改为 CDN 外置（`@require`），产物由 ~530KB 降至 ~23KB。
