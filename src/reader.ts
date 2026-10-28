@@ -39,14 +39,3 @@ export function getReaderInfo(
   };
   return detectReaderInfo(dom, chapterSelector, nextSelector);
 }
-
-/**
- * 从 URL 中提取书籍 ID。
- *
- * 微信读书阅读页形如 `https://weread.qq.com/web/reader/<bookId>?...`。
- * 取不到时返回 null，调用方据此跳过「换书检测」。
- */
-export function getBookId(href: string): string | null {
-  const match = /\/web\/reader\/([A-Za-z0-9_-]+)/.exec(href);
-  return match ? match[1] : null;
-}

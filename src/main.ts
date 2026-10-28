@@ -12,7 +12,7 @@ import {
   type StorageLike,
 } from "./config";
 import { getReaderInfo, type ReaderInfo } from "./reader";
-import { syncBook, currentHref } from "./session";
+import { syncBook, isBookChanged, currentHref } from "./session";
 import {
   downloadDataUrl,
   mergeImagesToCanvas,
@@ -27,7 +27,12 @@ import {
   type DrawableImage,
 } from "./image-load";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
-import { createPanel, updateStatus, type PanelHandle } from "./panel";
+import {
+  createPanel,
+  updateStatus,
+  PANEL_ID,
+  type PanelHandle,
+} from "./panel";
 import { stitchFullPage } from "./stitch";
 import html2canvas from "html2canvas";
 
@@ -42,11 +47,11 @@ export interface AppContext {
   /**
    * 当前页码（内存态，不持久化）。
    *
-   * 刷新页面会重新执行 init()，因此页码自然归 1；
-   * 在同一 SPA 会话内切换书籍时由 {@link syncBook} 检测并归 1。
+   * 刷新 / 重新进入页面时 `createApp()` 重建，页码自然归 1。
+   * 运行期间**只增不减**，因此不会出现同一页码被重复保存。
    */
   pageNum: number;
-  /** 当前书籍 ID，用于检测换书 */
+  /** 当前书籍 ID，null 表示尚未识别（见 session.readBookId） */
   bookId: string | null;
 }
 
@@ -59,6 +64,16 @@ export function createApp(): AppContext {
     pageNum: 1,
     bookId: null,
   };
+}
+
+/**
+ * 推进页码。
+ *
+ * 运行期间页码**只增不减**：即使将来某个分支意外算出更小的值，
+ * 也不会让已经保存过的页码被再次使用（避免 `screenshot_page_1 (1).png` 这类重复文件）。
+ */
+function advancePage(ctx: AppContext, next: number): void {
+  ctx.pageNum = Math.max(ctx.pageNum, next);
 }
 
 /** 结束任务并弹出总结 */
@@ -155,12 +170,40 @@ function collectAllCanvases(
   return collectCanvases(target);
 }
 
-/** 执行单步（一次截图 + 跳转） */
+/** 是否有步骤正在执行（防止重复进入导致同一页码被保存多次） */
+let stepping = false;
+
+/**
+ * 执行单步（一次截图 + 跳转）。
+ *
+ * 带重入保护：脚本被重复注入、或定时器被重复触发时，
+ * 也只允许一个步骤在跑，避免同一页码被导出多份。
+ */
 export async function executeStep(ctx: AppContext): Promise<void> {
+  if (!ctx.isRunning || stepping) return;
+
+  stepping = true;
+  try {
+    await executeStepInner(ctx);
+  } finally {
+    stepping = false;
+  }
+}
+
+/** 单步的实际逻辑 */
+async function executeStepInner(ctx: AppContext): Promise<void> {
   if (!ctx.isRunning) return;
 
-  // 运行途中若用户在同一页面内切了书，页码归 1
-  syncBook(ctx, currentHref());
+  // 运行途中真的换了书：本次任务已无意义，直接结束（不重置页码继续跑）
+  if (isBookChanged(ctx, currentHref())) {
+    stop(ctx);
+    updateStatus(
+      ctx.statusEl,
+      "检测到已切换书籍，本次任务已停止（重新开始会从第 1 页计数）",
+    );
+    return;
+  }
+
 
   const reader = getReaderInfo(document, ctx.config.chapterSelector, ctx.config.nextSelector);
 
@@ -240,7 +283,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum}-${index + 1}.png`);
           await new Promise((r) => setTimeout(r, 300));
         }
-        ctx.pageNum = pageNum + 1;
+        advancePage(ctx, pageNum + 1);
         updateStatus(ctx.statusEl, `[Canvas] 已保存并合成第 ${pageNum} 章共 ${engineCanvases.length} 页`);
       } else {
         for (let index = 0; index < engineCanvases.length; index++) {
@@ -249,7 +292,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum + index}.png`);
           await new Promise((r) => setTimeout(r, 300));
         }
-        ctx.pageNum = pageNum + engineCanvases.length;
+        advancePage(ctx, pageNum + engineCanvases.length);
         updateStatus(ctx.statusEl, `[Canvas] 已自适应并合成当前视窗内的 ${engineCanvases.length} 页`);
       }
     } catch (err) {
@@ -257,7 +300,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
       console.error("原生 Canvas 合并导出失败:", err);
       updateStatus(ctx.statusEl, "Canvas 导出失败，跳过当前页继续...");
       // 页码仍前进，避免卡死在同一页
-      ctx.pageNum = pageNum + (reader.mode === "chapter" ? 1 : engineCanvases.length);
+      advancePage(ctx, pageNum + (reader.mode === "chapter" ? 1 : engineCanvases.length));
     }
   } else {
     // ---- 引擎二：html2canvas 模式 ----
@@ -356,7 +399,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
 
         const dataUrl = stitchedCanvas.toDataURL("image/png");
         downloadDataUrl(dataUrl, `screenshot_chapter_${pageNum}.png`);
-        ctx.pageNum = pageNum + 1;
+        advancePage(ctx, pageNum + 1);
         updateStatus(ctx.statusEl, `[html2canvas] 章节长图拼接完成，已保存第 ${pageNum} 章`);
         stitched = true;
       }
@@ -379,12 +422,12 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           await new Promise((r) => setTimeout(r, 300));
           cropCanvasAndDownload(renderedCanvas!, halfWidth, 0, halfWidth, originalHeight, `screenshot_page_${pageNum + 1}.png`);
 
-          ctx.pageNum = pageNum + 2;
+          advancePage(ctx, pageNum + 2);
           updateStatus(ctx.statusEl, `[html2canvas] 水平双页切分已保存第 ${pageNum} 和 ${pageNum + 1} 页`);
         } else {
           const dataUrl = renderedCanvas!.toDataURL("image/png");
           downloadDataUrl(dataUrl, `screenshot_page_${pageNum}.png`);
-          ctx.pageNum = pageNum + 1;
+          advancePage(ctx, pageNum + 1);
           updateStatus(ctx.statusEl, `[html2canvas] 已成功导出整页/整章长图第 ${pageNum} 页`);
         }
       }
@@ -422,10 +465,14 @@ export async function executeStep(ctx: AppContext): Promise<void> {
 
 /** 初始化入口 */
 export function init(): void {
+  // 同一页面只允许一个实例：脚本被重复注入时，多出来的实例会和主实例
+  // 并行截图、各自推进页码，表现为「页码反复重置 / 同一页存了多份」。
+  if (document.getElementById(PANEL_ID)) return;
+
   const ctx = createApp();
   injectGlobalCSS();
 
-  // 记下进入页面时的书籍，用于后续检测换书
+  // 记录进入页面时的书籍（解析不到则留空，不影响后续）
   syncBook(ctx, currentHref());
 
   const panel = createPanel(
@@ -450,7 +497,7 @@ export function start(ctx: AppContext): void {
     updateStatus(ctx.statusEl, "已在运行中，请勿重复点击");
     return;
   }
-  // 换书后从第 1 页重新开始
+  // 空闲时同步书籍：真的换书了才归 1
   syncBook(ctx, currentHref());
   GM_setValue("session_startPage", ctx.pageNum);
   GM_setValue("session_savedCount", 0);

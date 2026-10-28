@@ -12,7 +12,7 @@ export interface PanelHandlers {
   onConfigChange: (config: Config) => void;
 }
 
-const PANEL_ID = "auto-screenshot-panel";
+export const PANEL_ID = "auto-screenshot-panel";
 const STYLE_ID = "auto-screenshot-panel-style";
 
 /** 面板样式（只注入一次） */
