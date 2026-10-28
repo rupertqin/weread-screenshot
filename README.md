@@ -18,7 +18,9 @@ src/
   config.ts        # 配置读写（封装 GM_getValue/setValue，支持注入 mock）
   reader.ts        # 模式识别（章节/水平书本，纯逻辑可单测）
   merge.ts         # AABB 碰撞检测 + 画布坐标映射（纯函数）
-  capture.ts       # 双引擎截图、插图加载（CORS/base64）、画布合并
+  image-fetch.ts   # 插图取字节：GM 通道（自动跟随→手动逐跳）、浏览器 fetch、会话缓存
+  image-load.ts    # 字节 → 可绘制对象 / base64，多图受限并发调度
+  canvas-ops.ts    # 画布碰撞合并、克隆导出、裁切下载
   stitch.ts        # 章节模式分段滚动截图 + 拼接长图（模式二）
   panel.ts         # 悬浮控制面板 UI
   dom.ts           # 模拟点击、滚动、样式注入等 DOM 操作
@@ -54,10 +56,11 @@ test/
 
 | 顺序 | 方式 | 说明 |
 |------|------|------|
-| 1 | **`GM_xmlhttpRequest` + `redirect:"manual"` 逐跳** | **首选**。管理器（ScriptCat 等）会校验**每一次重定向的目标**，`@connect *` 也放不过，报 `redirected to a not whitelisted URL`。改成手动跟跳：每次只发一条不跳转的请求，自己读 `Location` 再发下一条 |
-| 2 | Blob → `createImageBitmap` | 得到位图，绘制时**绝不污染画布** |
-| 3 | Blob → dataURL → `Image` | 环境不支持 `createImageBitmap` 时降级 |
-| 4 | 浏览器 `fetch` → Blob | **仅在 GM 不可用**时使用（受 CORS 约束，多数情况必失败） |
+| 1 | **`GM_xmlhttpRequest`，`redirect:"follow"`** | **首选**。授权到位时一次请求就拿到图（实测 ScriptCat 亦可） |
+| 2 | **同上传图，回退 `redirect:"manual"` 逐跳** | 仅当第 1 步出现**网络层失败**（含 `redirected to a not whitelisted URL`）才触发：自己读 `Location` 逐跳请求，每次只发一条不跳转的请求 |
+| 3 | Blob → `createImageBitmap` | 得到位图，绘制时**绝不污染画布** |
+| 4 | Blob → dataURL → `Image` | 环境不支持 `createImageBitmap` 时降级 |
+| 5 | 浏览器 `fetch` → Blob | **仅在 GM 不可用**时使用（受 CORS 约束，多数情况必失败） |
 | — | 全部失败则**跳过该图** | 不阻断导出、不污染画布 |
 
 所需权限（已写入 userscript header）：
@@ -67,9 +70,13 @@ test/
 // @connect *
 ```
 
-> **为什么手动跟重定向**：插图链路是「`res.weread.qq.com` → 302 → 腾讯云 COS」。`res.weread.qq.com` 的 **302 响应没有 `Access-Control-Allow-Origin`**，按 Fetch 规范 CORS 请求要校验重定向链上的**每一个**响应，所以 `fetch` 和 `<img crossOrigin>` 都在第一跳就失败；而管理器又会拦跨域重定向。用 `redirect:"manual"` 把一次跨域跳转拆成两次单跳请求，两边都绕开了。
+> **为什么还需要手动逐跳**：插图链路是「`res.weread.qq.com` → 302 → 腾讯云 COS」，而 `res.weread.qq.com` 的 **302 响应没有 `Access-Control-Allow-Origin`**——按 Fetch 规范 CORS 请求要校验重定向链上的**每一个**响应，所以浏览器 `fetch` 和 `<img crossOrigin>` 都在第一跳就挂。
+> 走 `GM_xmlhttpRequest` 则不经过 CORS 判定，正常情况下一次请求即可。只有管理器的跨域重定向白名单介入时才需要降级为手动逐跳，所以它只作为**自动兜底**，不再是用户选项。
 >
 > 另外 `blob:` / `data:` 属同源资源，直接走浏览器 `fetch`。
+
+每次点「开始」会打印：`[截图] 启动 | 引擎=canvas|html2canvas`；有插图时会打印
+`[插图] 取图通道：GM_xmlhttpRequest=可用，createImageBitmap=可用，并发=4`。
 
 **性能与请求量优化**：
 

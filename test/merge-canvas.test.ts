@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   getMergedCanvasDataUrl,
   mergeImagesToCanvas,
+} from "../src/canvas-ops";
+import {
   isSafeToDraw,
   prepareDrawableImages,
-  clearImageBlobCache,
-} from "../src/capture";
+} from "../src/image-load";
+import { clearImageBlobCache } from "../src/image-fetch";
 
 /** 创建一个带 mock 2d context 的 canvas，可记录 drawImage 调用 */
 function makeMockCanvas(width: number, height: number): {
@@ -303,12 +305,9 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
     vi.unstubAllGlobals();
   });
 
-  it("GM 手动跟随 302（逐跳请求），避免管理器跨域重定向白名单拒绝", async () => {
+  it("默认一次请求交给管理器自动跟随重定向（最快路径）", async () => {
     const el = new Image();
     el.src = "https://res.weread.qq.com/wrepub/a.jpg";
-
-    const cosUrl =
-      "https://wrco-40036.sh.gfp.tencent-cloud.com/CB_1/wrk_abc.jpg?sign=xyz";
 
     const calls: { url: string; redirect?: string }[] = [];
     const gmSpy = vi.fn(
@@ -322,20 +321,11 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
         }) => void;
       }) => {
         calls.push({ url: details.url, redirect: details.redirect });
-        if (details.url === "https://res.weread.qq.com/wrepub/a.jpg") {
-          // 第一跳：返回 302 + Location
-          details.onload?.({
-            status: 302,
-            response: null,
-            responseHeaders: `HTTP/1.1 302 Found\r\nLocation: ${cosUrl}\r\n`,
-          });
-        } else {
-          details.onload?.({
-            status: 200,
-            response: new Uint8Array([1, 2, 3, 4]).buffer,
-            responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
-          });
-        }
+        details.onload?.({
+          status: 200,
+          response: new Uint8Array([1, 2, 3, 4]).buffer,
+          responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
+        });
       },
     );
     vi.stubGlobal("GM_xmlhttpRequest", gmSpy);
@@ -347,12 +337,80 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
     const result = await prepareDrawableImages([el]);
 
-    // 两跳：第一跳原始地址，第二跳 COS 地址；都要求手动重定向
-    expect(calls.length).toBe(2);
-    expect(calls[0].url).toBe("https://res.weread.qq.com/wrepub/a.jpg");
-    expect(calls[1].url).toBe(cosUrl);
-    expect(calls.every((c) => c.redirect === "manual")).toBe(true);
-    // 最终成功拿到图
+    // 自动跟随成功：只发一次请求
+    expect(calls.length).toBe(1);
+    expect(calls[0].redirect).toBe("follow");
+    expect(result.length).toBe(1);
+    expect(isSafeToDraw(result[0].img)).toBe(true);
+
+    consoleLog.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("自动跟随被拦（网络层错误）时回退手动逐跳，仍能拿到图", async () => {
+    const original = "https://res.weread.qq.com/wrepub/b.jpg";
+    const cosUrl =
+      "https://wrco-40036.sh.gfp.tencent-cloud.com/CB_1/wrk_abc.jpg?sign=xyz";
+
+    const el = new Image();
+    el.src = original;
+
+    const calls: { url: string; redirect?: string }[] = [];
+    const gmSpy = vi.fn(
+      (details: {
+        url: string;
+        redirect?: string;
+        onload?: (res: {
+          status: number;
+          response: ArrayBuffer | null;
+          responseHeaders: string;
+        }) => void;
+        onerror?: (res: { status: number; error: string }) => void;
+      }) => {
+        calls.push({ url: details.url, redirect: details.redirect });
+
+        // 自动跟随这一跳被管理器的跨域重定向白名单拒绝
+        if (details.redirect === "follow") {
+          details.onerror?.({
+            status: 0,
+            error: "Refused to connect: redirected to a not whitelisted URL",
+          });
+          return;
+        }
+
+        // 手动逐跳：原地址返回 302 + Location
+        if (details.url === original) {
+          details.onload?.({
+            status: 302,
+            response: null,
+            responseHeaders: `HTTP/1.1 302 Found\r\nLocation: ${cosUrl}\r\n`,
+          });
+          return;
+        }
+
+        // 第二跳拿到图片
+        details.onload?.({
+          status: 200,
+          response: new Uint8Array([1, 2, 3, 4]).buffer,
+          responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
+        });
+      },
+    );
+    vi.stubGlobal("GM_xmlhttpRequest", gmSpy);
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 10, height: 10, close: () => {} })),
+    );
+
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const result = await prepareDrawableImages([el]);
+
+    // 第 1 次自动跟随，失败后回退两次手动逐跳
+    expect(calls.length).toBe(3);
+    expect(calls[0].redirect).toBe("follow");
+    expect(calls[1].redirect).toBe("manual");
+    expect(calls[1].url).toBe(original);
+    expect(calls[2].url).toBe(cosUrl);
     expect(result.length).toBe(1);
     expect(isSafeToDraw(result[0].img)).toBe(true);
 

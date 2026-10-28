@@ -2,40 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   bakeImagesToBase64,
   restoreImageSources,
-  waitForImageLoad,
   createCachedImageBaker,
-} from "../src/capture";
-
-describe("waitForImageLoad - 等待图片解码", () => {
-  it("已加载完成的图片立即 resolve", async () => {
-    const img = new Image();
-    Object.defineProperty(img, "complete", { value: true });
-    Object.defineProperty(img, "naturalWidth", { value: 100 });
-    await expect(waitForImageLoad(img)).resolves.toBeUndefined();
-  });
-
-  it("decode 成功时使用 decode 完成", async () => {
-    const img = new Image();
-    Object.defineProperty(img, "complete", { value: false });
-    img.decode = vi.fn(async () => {}) as unknown as () => Promise<void>;
-    await expect(waitForImageLoad(img)).resolves.toBeUndefined();
-    expect(img.decode).toHaveBeenCalled();
-  });
-
-  it("decode 失败时降级为 load 事件", async () => {
-    const img = new Image();
-    Object.defineProperty(img, "complete", { value: false });
-    img.decode = vi.fn(async () => {
-      throw new Error("decode failed");
-    }) as unknown as () => Promise<void>;
-
-    const promise = waitForImageLoad(img);
-    // 等 decode 的 catch 分支注册好 load 监听器后再触发事件
-    await new Promise((r) => setTimeout(r, 0));
-    img.dispatchEvent(new Event("load"));
-    await expect(promise).resolves.toBeUndefined();
-  });
-});
+} from "../src/image-load";
 
 describe("bakeImagesToBase64 - 302 烘焙", () => {
   // happy-dom 的 Image 默认无 decode，需打桩以避免等待 load 事件导致挂起

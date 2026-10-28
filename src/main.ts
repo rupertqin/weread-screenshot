@@ -14,15 +14,17 @@ import {
 import { getReaderInfo, type ReaderInfo } from "./reader";
 import {
   downloadDataUrl,
-  bakeImagesToBase64,
-  restoreImageSources,
   mergeImagesToCanvas,
   getMergedCanvasDataUrl,
   cropCanvasAndDownload,
+} from "./canvas-ops";
+import {
+  bakeImagesToBase64,
+  restoreImageSources,
   createCachedImageBaker,
   prepareDrawableImages,
   type DrawableImage,
-} from "./capture";
+} from "./image-load";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
 import { createPanel, updateStatus } from "./panel";
 import { stitchFullPage } from "./stitch";
@@ -440,6 +442,10 @@ export function start(ctx: AppContext): void {
   GM_setValue("isRunning", true);
   ctx.isRunning = true;
   updateStatus(ctx.statusEl, "正在启动...");
+
+  // 每次启动都打印一次配置，便于确认当前生效的设置
+  console.log(`[截图] 启动 | 引擎=${ctx.config.engineMode}`);
+
   void executeStep(ctx);
 }
 
