@@ -61,12 +61,14 @@ describe("loadConfig / saveConfig - 配置读写", () => {
       targetSelector: "C",
       delay: 500,
       engineMode: "html2canvas",
+      imageFormat: "png",
     });
 
     const loaded = loadConfig(storage);
     expect(loaded.nextSelector).toBe("A");
     expect(loaded.delay).toBe(500);
     expect(loaded.engineMode).toBe("html2canvas");
+    expect(loaded.imageFormat).toBe("png");
   });
 
   it("loadConfig 用存储值覆盖默认值", () => {

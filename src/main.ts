@@ -16,7 +16,8 @@ import { syncBook, isBookChanged, currentHref } from "./session";
 import {
   downloadDataUrl,
   mergeImagesToCanvas,
-  getMergedCanvasDataUrl,
+  getMergedCanvasExport,
+  encodeCanvas,
   cropCanvasAndDownload,
 } from "./canvas-ops";
 import {
@@ -279,8 +280,15 @@ async function executeStepInner(ctx: AppContext): Promise<void> {
       if (reader.mode === "chapter") {
         for (let index = 0; index < engineCanvases.length; index++) {
           const canvas = engineCanvases[index];
-          const mergedDataUrl = getMergedCanvasDataUrl(canvas, drawables);
-          downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum}-${index + 1}.png`);
+          const { dataUrl, ext } = getMergedCanvasExport(
+            canvas,
+            drawables,
+            ctx.config.imageFormat,
+          );
+          downloadDataUrl(
+            dataUrl,
+            `screenshot_page_${pageNum}-${index + 1}.${ext}`,
+          );
           await new Promise((r) => setTimeout(r, 300));
         }
         advancePage(ctx, pageNum + 1);
@@ -288,8 +296,12 @@ async function executeStepInner(ctx: AppContext): Promise<void> {
       } else {
         for (let index = 0; index < engineCanvases.length; index++) {
           const canvas = engineCanvases[index];
-          const mergedDataUrl = getMergedCanvasDataUrl(canvas, drawables);
-          downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum + index}.png`);
+          const { dataUrl, ext } = getMergedCanvasExport(
+            canvas,
+            drawables,
+            ctx.config.imageFormat,
+          );
+          downloadDataUrl(dataUrl, `screenshot_page_${pageNum + index}.${ext}`);
           await new Promise((r) => setTimeout(r, 300));
         }
         advancePage(ctx, pageNum + engineCanvases.length);
@@ -397,8 +409,11 @@ async function executeStepInner(ctx: AppContext): Promise<void> {
 
         if (!ctx.isRunning) return;
 
-        const dataUrl = stitchedCanvas.toDataURL("image/png");
-        downloadDataUrl(dataUrl, `screenshot_chapter_${pageNum}.png`);
+        const exported = encodeCanvas(stitchedCanvas, ctx.config.imageFormat);
+        downloadDataUrl(
+          exported.dataUrl,
+          `screenshot_chapter_${pageNum}.${exported.ext}`,
+        );
         advancePage(ctx, pageNum + 1);
         updateStatus(ctx.statusEl, `[html2canvas] 章节长图拼接完成，已保存第 ${pageNum} 章`);
         stitched = true;
@@ -418,15 +433,37 @@ async function executeStepInner(ctx: AppContext): Promise<void> {
           const originalHeight = renderedCanvas!.height;
           const halfWidth = originalWidth / 2;
 
-          cropCanvasAndDownload(renderedCanvas!, 0, 0, halfWidth, originalHeight, `screenshot_page_${pageNum}.png`);
+          cropCanvasAndDownload(
+            renderedCanvas!,
+            0,
+            0,
+            halfWidth,
+            originalHeight,
+            `screenshot_page_${pageNum}`,
+            ctx.config.imageFormat,
+          );
           await new Promise((r) => setTimeout(r, 300));
-          cropCanvasAndDownload(renderedCanvas!, halfWidth, 0, halfWidth, originalHeight, `screenshot_page_${pageNum + 1}.png`);
+          cropCanvasAndDownload(
+            renderedCanvas!,
+            halfWidth,
+            0,
+            halfWidth,
+            originalHeight,
+            `screenshot_page_${pageNum + 1}`,
+            ctx.config.imageFormat,
+          );
 
           advancePage(ctx, pageNum + 2);
           updateStatus(ctx.statusEl, `[html2canvas] 水平双页切分已保存第 ${pageNum} 和 ${pageNum + 1} 页`);
         } else {
-          const dataUrl = renderedCanvas!.toDataURL("image/png");
-          downloadDataUrl(dataUrl, `screenshot_page_${pageNum}.png`);
+          const exported = encodeCanvas(
+            renderedCanvas!,
+            ctx.config.imageFormat,
+          );
+          downloadDataUrl(
+            exported.dataUrl,
+            `screenshot_page_${pageNum}.${exported.ext}`,
+          );
           advancePage(ctx, pageNum + 1);
           updateStatus(ctx.statusEl, `[html2canvas] 已成功导出整页/整章长图第 ${pageNum} 页`);
         }

@@ -5,12 +5,17 @@
  * 使其可在 Node 环境（单元测试）中通过注入 mock 正常运行。
  */
 
+/** 导出图片格式（与 canvas-ops 的 ImageFormat 保持一致） */
+export type ExportFormat = "png" | "webp";
+
 export interface Config {
   nextSelector: string;
   chapterSelector: string;
   targetSelector: string;
   delay: number;
   engineMode: "canvas" | "html2canvas";
+  /** 导出格式：webp 体积约为 png 的 1/4 */
+  imageFormat: ExportFormat;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -24,6 +29,8 @@ export const DEFAULT_CONFIG: Config = {
   delay: 1000,
   // 默认引擎
   engineMode: "canvas",
+  // 默认导出为 WebP：截图体积远小于 PNG，文字依然清晰
+  imageFormat: "webp",
 };
 
 export interface StorageLike {
@@ -62,6 +69,7 @@ export function loadConfig(storage: StorageLike): Config {
     targetSelector: storage.get("targetSelector", DEFAULT_CONFIG.targetSelector),
     delay: storage.get("delay", DEFAULT_CONFIG.delay),
     engineMode: storage.get("engineMode", DEFAULT_CONFIG.engineMode),
+    imageFormat: storage.get("imageFormat", DEFAULT_CONFIG.imageFormat),
   };
 }
 
@@ -72,4 +80,5 @@ export function saveConfig(storage: StorageLike, config: Config): void {
   storage.set("targetSelector", config.targetSelector);
   storage.set("delay", config.delay);
   storage.set("engineMode", config.engineMode);
+  storage.set("imageFormat", config.imageFormat);
 }

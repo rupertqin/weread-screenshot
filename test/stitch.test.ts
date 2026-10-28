@@ -13,6 +13,7 @@ function makeCtx(): AppContext {
       targetSelector: "",
       delay: 0,
       engineMode: "html2canvas",
+      imageFormat: "webp",
     },
     storage: { get: (_k, d) => d, set: () => {} },
     statusEl: null,

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
-  getMergedCanvasDataUrl,
+  getMergedCanvasExport,
   mergeImagesToCanvas,
+  encodeCanvas,
+  WEBP_QUALITY,
 } from "../src/canvas-ops";
 import {
   isSafeToDraw,
@@ -74,7 +76,7 @@ describe("getMergedCanvasDataUrl - 克隆合并使用参考画布几何", () => 
       return el;
     });
 
-    const dataUrl = getMergedCanvasDataUrl(refCanvas, [img]);
+    const { dataUrl } = getMergedCanvasExport(refCanvas, [img], "png");
 
     expect(cloneDrawSpy).not.toBeNull();
     // 第一个调用克隆原画布；第二个调用是插图
@@ -616,5 +618,51 @@ describe("mergeImagesToCanvas - 支持 DrawableImage（CORS 副本）", () => {
 
     // 绘制的是 CORS 副本，坐标来自原图 el
     expect(drawSpy).toHaveBeenCalledWith(corsImg, 200, 0, 200, 200);
+  });
+});
+
+describe("encodeCanvas - 导出格式与扩展名", () => {
+  function canvasReturning(dataUrl: string) {
+    const canvas = document.createElement("canvas");
+    const spy = vi.spyOn(canvas, "toDataURL").mockReturnValue(dataUrl);
+    return { canvas, spy };
+  }
+
+  it("png：不带质量参数，扩展名 png", () => {
+    const { canvas, spy } = canvasReturning("data:image/png;base64,AAA");
+
+    const result = encodeCanvas(canvas, "png");
+
+    expect(spy).toHaveBeenCalledWith("image/png", undefined);
+    expect(result.ext).toBe("png");
+  });
+
+  it("webp：带质量参数，扩展名 webp", () => {
+    const { canvas, spy } = canvasReturning("data:image/webp;base64,AAA");
+
+    const result = encodeCanvas(canvas, "webp");
+
+    expect(spy).toHaveBeenCalledWith("image/webp", WEBP_QUALITY);
+    expect(result.ext).toBe("webp");
+  });
+
+  it("浏览器不支持 webp（静默回落 PNG）时，扩展名跟随实际格式", () => {
+    // 请求 webp 但底层返回 PNG 数据
+    const { canvas } = canvasReturning("data:image/png;base64,AAA");
+
+    const result = encodeCanvas(canvas, "webp");
+
+    // 关键：不能把 PNG 内容命名为 .webp
+    expect(result.ext).toBe("png");
+  });
+
+  it("jpeg 数据统一用 jpg 后缀", () => {
+    const { canvas } = canvasReturning("data:image/jpeg;base64,AAA");
+    expect(encodeCanvas(canvas, "webp").ext).toBe("jpg");
+  });
+
+  it("MIME 解析不出时兜底为 png", () => {
+    const { canvas } = canvasReturning("data:text/plain;base64,AAA");
+    expect(encodeCanvas(canvas, "webp").ext).toBe("png");
   });
 });

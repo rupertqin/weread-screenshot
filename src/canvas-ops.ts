@@ -1,5 +1,5 @@
 /**
- * 画布操作模块：把插图按物理位置合并进画布、克隆导出、裁切下载。
+ * 画布操作模块：把插图按物理位置合并进画布、编码导出、裁切下载。
  *
  * 纯几何定位 + Canvas 2D 操作，不涉及网络。取图见 image-fetch.ts / image-load.ts。
  */
@@ -7,10 +7,55 @@
 import { computeDrawRect, toRect } from "./merge";
 import { isSafeToDraw, type DrawableImage } from "./image-load";
 
+/**
+ * 导出格式。
+ *
+ * - `png`：无损，兼容性最好，但截图体积大（文字抗锯齿细节几乎无法压缩）；
+ * - `webp`：有损，体积通常只有 PNG 的 1/4 左右，文字依然清晰，且保留透明通道。
+ *
+ * 不支持 WebP 的浏览器会在 `toDataURL` 时静默回落为 PNG，文件名后缀会自动跟随实际格式。
+ */
+export type ImageFormat = "png" | "webp";
+
+const MIME: Record<ImageFormat, string> = {
+  png: "image/png",
+  webp: "image/webp",
+};
+
+/** WebP 编码质量：0.95 对文字截图基本看不出损失 */
+export const WEBP_QUALITY = 0.95;
+
+export interface EncodedImage {
+  dataUrl: string;
+  /** 实际扩展名（浏览器不支持 WebP 时会是 png） */
+  ext: string;
+}
+
 /** 元素 → 碰撞计算用的 Rect */
 function rectOf(el: Element) {
   const r = el.getBoundingClientRect();
   return toRect(r.left, r.top, r.width, r.height);
+}
+
+/**
+ * 把画布编码成图片数据。
+ *
+ * 以 `dataUrl` 里**真实的 MIME** 决定扩展名：某些环境不支持 WebP 时，
+ * `toDataURL("image/webp")` 会静默返回 PNG 数据，若仍按 .webp 命名会造成「扩展名与内容不符」。
+ */
+export function encodeCanvas(
+  canvas: HTMLCanvasElement,
+  format: ImageFormat,
+): EncodedImage {
+  const dataUrl = canvas.toDataURL(
+    MIME[format],
+    format === "png" ? undefined : WEBP_QUALITY,
+  );
+
+  const mime = /^data:image\/([a-z]+)/i.exec(dataUrl)?.[1]?.toLowerCase();
+  const ext = mime === "jpeg" ? "jpg" : mime || "png";
+
+  return { dataUrl, ext };
 }
 
 /** 触发下载（基于 DataURL 字符串） */
@@ -23,10 +68,19 @@ export function downloadDataUrl(dataUrl: string, filename: string): void {
   document.body.removeChild(downloadLink);
 }
 
-/** 触发下载（基于 Canvas 对象） */
-function downloadCanvas(canvas: HTMLCanvasElement, filename: string): void {
+/**
+ * 编码并下载画布。
+ *
+ * @param baseName 不含扩展名的文件名，扩展名按实际编码格式自动补
+ */
+export function downloadCanvas(
+  canvas: HTMLCanvasElement,
+  baseName: string,
+  format: ImageFormat = "png",
+): void {
   try {
-    downloadDataUrl(canvas.toDataURL("image/png"), filename);
+    const { dataUrl, ext } = encodeCanvas(canvas, format);
+    downloadDataUrl(dataUrl, `${baseName}.${ext}`);
   } catch (e) {
     console.error("Canvas 导出失败：", e);
   }
@@ -39,7 +93,8 @@ export function cropCanvasAndDownload(
   sy: number,
   sw: number,
   sh: number,
-  filename: string,
+  baseName: string,
+  format: ImageFormat = "png",
 ): void {
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = sw;
@@ -47,7 +102,7 @@ export function cropCanvasAndDownload(
   const ctx = tempCanvas.getContext("2d");
   if (!ctx) return;
   ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-  downloadCanvas(tempCanvas, filename);
+  downloadCanvas(tempCanvas, baseName, format);
 }
 
 /**
@@ -93,20 +148,22 @@ export function mergeImagesToCanvas(
 }
 
 /**
- * 内存克隆合并算法：克隆"原始画布"并把插图合并上去，返回 DataURL。
+ * 内存克隆合并算法：克隆"原始画布"并把插图合并上去，返回编码结果。
  *
  * 关键：合并定位用的是原始画布（refCanvas，在 DOM 中），而非克隆画布。
  */
-export function getMergedCanvasDataUrl(
+export function getMergedCanvasExport(
   refCanvas: HTMLCanvasElement,
   images: (DrawableImage | HTMLImageElement)[],
-): string {
+  format: ImageFormat = "png",
+): EncodedImage {
   const clone = document.createElement("canvas");
   clone.width = refCanvas.width;
   clone.height = refCanvas.height;
   const ctx = clone.getContext("2d");
-  if (!ctx) return "";
+  if (!ctx) return { dataUrl: "", ext: format };
+
   ctx.drawImage(refCanvas, 0, 0);
   mergeImagesToCanvas(clone, refCanvas, images);
-  return clone.toDataURL("image/png");
+  return encodeCanvas(clone, format);
 }

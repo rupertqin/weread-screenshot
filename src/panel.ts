@@ -255,6 +255,13 @@ export function createPanel(
         </select>
       </div>
       <div class="asp-row">
+        <span class="asp-label">格式</span>
+        <select id="ipt-format" title="导出图片格式">
+          <option value="webp" title="有损压缩，体积约为 PNG 的 1/4，文字依然清晰">WebP · 小体积</option>
+          <option value="png" title="无损压缩，体积较大">PNG · 无损</option>
+        </select>
+      </div>
+      <div class="asp-row">
         <button id="btn-start" class="asp-btn asp-primary" type="button">开始</button>
         <button id="btn-stop" class="asp-btn asp-danger" type="button" style="display: none;">停止</button>
       </div>
@@ -265,6 +272,9 @@ export function createPanel(
   const engineSelect = div.querySelector("#ipt-engine") as HTMLSelectElement;
   engineSelect.value = initial.engineMode;
 
+  const formatSelect = div.querySelector("#ipt-format") as HTMLSelectElement;
+  formatSelect.value = initial.imageFormat;
+
   const startBtn = div.querySelector("#btn-start") as HTMLButtonElement;
   const stopBtn = div.querySelector("#btn-stop") as HTMLButtonElement;
   const collapseBtn = div.querySelector("#btn-collapse") as HTMLButtonElement;
@@ -272,8 +282,9 @@ export function createPanel(
   const setRunning = (running: boolean): void => {
     startBtn.style.display = running ? "none" : "";
     stopBtn.style.display = running ? "" : "none";
-    // 运行中禁止改模式，避免中途切换导致 targetSelector 错配
+    // 运行中禁止改模式/格式，避免中途切换导致 targetSelector 错配或同批文件格式混杂
     engineSelect.disabled = running;
+    formatSelect.disabled = running;
     // 收起后靠标题左侧的状态点区分运行中 / 已停止
     div.classList.toggle("is-running", running);
   };
@@ -335,10 +346,14 @@ export function createPanel(
         : ".wr_canvasContainer canvas",
     delay: initial.delay,
     engineMode: engineSelect.value as Config["engineMode"],
+    imageFormat: formatSelect.value as Config["imageFormat"],
   });
 
-  // 引擎切换时保存配置
+  // 引擎 / 格式切换时保存配置
   engineSelect.addEventListener("change", () =>
+    handlers.onConfigChange(readConfig()),
+  );
+  formatSelect.addEventListener("change", () =>
     handlers.onConfigChange(readConfig()),
   );
 

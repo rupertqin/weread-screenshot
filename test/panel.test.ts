@@ -8,6 +8,7 @@ const baseConfig: Config = {
   targetSelector: ".wr_canvasContainer canvas",
   delay: 1000,
   engineMode: "canvas",
+  imageFormat: "webp",
 };
 
 function makeHandlers() {
@@ -38,7 +39,12 @@ describe("createPanel - 布局", () => {
       panel.querySelectorAll<HTMLElement>(".asp-body select, .asp-body button"),
     ).map((el) => el.id);
 
-    expect(order).toEqual(["ipt-engine", "btn-start", "btn-stop"]);
+    expect(order).toEqual([
+      "ipt-engine",
+      "ipt-format",
+      "btn-start",
+      "btn-stop",
+    ]);
   });
 
   it("首行控件是模式选择，且标题在其上方", () => {
@@ -233,6 +239,34 @@ describe("createPanel - 交互", () => {
   it("回显已保存的引擎模式", () => {
     const { $ } = mount({ ...baseConfig, engineMode: "html2canvas" });
     expect($<HTMLSelectElement>("#ipt-engine").value).toBe("html2canvas");
+  });
+
+  it("回显已保存的导出格式", () => {
+    const { $ } = mount({ ...baseConfig, imageFormat: "png" });
+    expect($<HTMLSelectElement>("#ipt-format").value).toBe("png");
+  });
+
+  it("切换格式时回传 imageFormat", () => {
+    const { $, handlers } = mount();
+    const select = $<HTMLSelectElement>("#ipt-format");
+
+    select.value = "png";
+    select.dispatchEvent(new Event("change"));
+
+    const cfg = handlers.onConfigChange.mock.calls[0][0] as Config;
+    expect(cfg.imageFormat).toBe("png");
+  });
+
+  it("运行中同时禁用模式与格式选择", () => {
+    const { handle, $ } = mount();
+
+    handle.setRunning(true);
+    expect($<HTMLSelectElement>("#ipt-engine").disabled).toBe(true);
+    expect($<HTMLSelectElement>("#ipt-format").disabled).toBe(true);
+
+    handle.setRunning(false);
+    expect($<HTMLSelectElement>("#ipt-engine").disabled).toBe(false);
+    expect($<HTMLSelectElement>("#ipt-format").disabled).toBe(false);
   });
 
   it("切换引擎时按模式映射 targetSelector 并回传配置", () => {
