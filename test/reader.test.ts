@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { detectReaderInfo, getReaderInfo, type ReaderDom } from "../src/reader";
+import {
+  detectReaderInfo,
+  getReaderInfo,
+  getBookId,
+  type ReaderDom,
+} from "../src/reader";
 
 describe("detectReaderInfo - 模式判定（纯逻辑）", () => {
   const chapterSel = ".readerFooter_button";
@@ -49,5 +54,28 @@ describe("getReaderInfo - 从 document 识别", () => {
       ".renderTarget_pager_button_right",
     );
     expect(info.mode).toBe("chapter");
+  });
+});
+
+describe("getBookId - 从阅读页 URL 提取书籍 ID", () => {
+  it("标准阅读页 URL", () => {
+    expect(
+      getBookId("https://weread.qq.com/web/reader/8f932bf0721a5f1c8f9d3e4?"),
+    ).toBe("8f932bf0721a5f1c8f9d3e4");
+  });
+
+  it("带 hash 和查询参数", () => {
+    expect(
+      getBookId("https://weread.qq.com/web/reader/abc123DEF?foo=1#bar"),
+    ).toBe("abc123DEF");
+  });
+
+  it("允许下划线与短横线", () => {
+    expect(getBookId("https://weread.qq.com/web/reader/a_b-c1/x")).toBe("a_b-c1");
+  });
+
+  it("非阅读页返回 null", () => {
+    expect(getBookId("https://weread.qq.com/web/shelf")).toBeNull();
+    expect(getBookId("")).toBeNull();
   });
 });

@@ -62,7 +62,7 @@
     div.style.width = "240px";
 
     div.innerHTML =
-      '<h4 style="margin: 0 0 8px 0; font-size: 14px;">双引擎无损导出助手</h4>' +
+      '<h4 style="margin: 0 0 8px 0; font-size: 14px;">截图导出助手</h4>' +
       '<div style="margin-bottom: 6px;">' +
       "<label>导出引擎:</label>" +
       '<select id="ipt-engine" style="width:100%; box-sizing:border-box; margin-top:2px; height: 24px;">' +

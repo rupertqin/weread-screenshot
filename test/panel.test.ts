@@ -14,9 +14,16 @@ function makeHandlers() {
   return {
     onStart: vi.fn(),
     onStop: vi.fn(),
-    onReset: vi.fn(),
     onConfigChange: vi.fn(),
   };
+}
+
+function mount(config: Config = baseConfig, handlers = makeHandlers()) {
+  const handle = createPanel(config, () => "第 1 页", handlers);
+  const panel = handle.el;
+  const $ = <T extends HTMLElement>(sel: string) =>
+    panel.querySelector(sel) as T;
+  return { handle, panel, $, handlers };
 }
 
 afterEach(() => {
@@ -25,55 +32,175 @@ afterEach(() => {
 
 describe("createPanel - 布局", () => {
   it("模式选择排在按钮之前（第一行）", () => {
-    const panel = createPanel(baseConfig, () => "第 1 页", makeHandlers());
+    const { panel } = mount();
 
     const order = Array.from(
-      panel.querySelectorAll<HTMLElement>("select, button"),
+      panel.querySelectorAll<HTMLElement>(".asp-body select, .asp-body button"),
     ).map((el) => el.id);
 
-    expect(order).toEqual([
-      "ipt-engine",
-      "btn-start",
-      "btn-stop",
-      "btn-reset",
-    ]);
+    expect(order).toEqual(["ipt-engine", "btn-start", "btn-stop"]);
   });
 
   it("首行控件是模式选择，且标题在其上方", () => {
-    const panel = createPanel(baseConfig, () => "第 1 页", makeHandlers());
+    const { panel } = mount();
 
-    const firstControl = panel.querySelector("select, button");
-    expect(firstControl?.id).toBe("ipt-engine");
-
-    const title = panel.querySelector(".asp-title");
-    expect(title?.textContent).toContain("双引擎无损导出");
+    expect(panel.querySelector(".asp-body select, .asp-body button")?.id).toBe(
+      "ipt-engine",
+    );
+    expect(panel.querySelector(".asp-title")?.textContent).toContain(
+      "截图导出",
+    );
   });
 
-  it("状态行在最下方", () => {
-    const panel = createPanel(baseConfig, () => "第 1 页", makeHandlers());
+  it("状态行位于可折叠主体内、且在最下方", () => {
+    const { panel } = mount();
+    const body = panel.querySelector(".asp-body");
 
-    const lastChild = panel.lastElementChild;
-    expect(lastChild?.id).toBe("txt-status");
+    expect(body?.lastElementChild?.id).toBe("txt-status");
+  });
+});
+
+describe("createPanel - 收起/展开", () => {
+  it("默认展开", () => {
+    const { panel, $ } = mount();
+
+    expect(panel.classList.contains("is-collapsed")).toBe(false);
+    expect($("#btn-collapse").getAttribute("aria-expanded")).toBe("true");
+    expect($("#btn-collapse").title).toBe("收起");
+  });
+
+  it("点击后收起，再点恢复展开", () => {
+    const { panel, $ } = mount();
+    const btn = $<HTMLButtonElement>("#btn-collapse");
+
+    btn.click();
+    expect(panel.classList.contains("is-collapsed")).toBe(true);
+    expect(btn.getAttribute("aria-expanded")).toBe("false");
+    expect(btn.title).toBe("展开");
+
+    btn.click();
+    expect(panel.classList.contains("is-collapsed")).toBe(false);
+    expect(btn.getAttribute("aria-expanded")).toBe("true");
+    expect(btn.title).toBe("收起");
+  });
+
+  it("收起按钮在标题行内、且位于折叠主体之外", () => {
+    const { panel } = mount();
+    const head = panel.querySelector(".asp-head");
+
+    expect(head?.querySelector("#btn-collapse")).not.toBeNull();
+    // 收起后主体被隐藏，但按钮必须仍可见可点
+    expect(head?.querySelector("#btn-collapse")).toBe(
+      panel.querySelector("#btn-collapse"),
+    );
+    expect(panel.querySelector(".asp-body")?.contains(head)).toBe(false);
+  });
+
+  it("收起时宽度收到标题实际宽度，不保留固定宽度", () => {
+    const { panel, $ } = mount();
+    const title = panel.querySelector(".asp-title") as HTMLElement;
+    const toggle = $("#btn-collapse");
+
+    // happy-dom 无真实布局，这里注入测量值：标题 96px、按钮 20px
+    vi.spyOn(title, "getBoundingClientRect").mockReturnValue({
+      width: 96,
+    } as DOMRect);
+    vi.spyOn(toggle, "getBoundingClientRect").mockReturnValue({
+      width: 20,
+    } as DOMRect);
+
+    $<HTMLButtonElement>("#btn-collapse").click();
+
+    // 96（标题）+ 8（间距）+ 20（按钮）= 124，而不是 220
+    expect(panel.style.width).toBe("124px");
+  });
+
+  it("收起时若无法测量（无布局环境）则回落到样式表宽度", () => {
+    const { panel, $ } = mount();
+
+    $<HTMLButtonElement>("#btn-collapse").click();
+
+    // 读不到标题宽度时不写内联宽度
+    expect(panel.style.width).toBe("");
+    expect(panel.classList.contains("is-collapsed")).toBe(true);
+  });
+
+  it("重新展开时清除内联宽度", () => {
+    const { panel, $ } = mount();
+    const title = panel.querySelector(".asp-title") as HTMLElement;
+    vi.spyOn(title, "getBoundingClientRect").mockReturnValue({
+      width: 96,
+    } as DOMRect);
+
+    const btn = $<HTMLButtonElement>("#btn-collapse");
+    btn.click();
+    expect(panel.style.width).not.toBe("");
+
+    btn.click();
+    expect(panel.style.width).toBe("");
+  });
+
+  it("收起状态与运行状态互不干扰", () => {
+    const { handle, panel, $ } = mount();
+
+    handle.setRunning(true);
+    $<HTMLButtonElement>("#btn-collapse").click();
+
+    // 收起后仍在运行态：停止可见、开始隐藏
+    expect(panel.classList.contains("is-collapsed")).toBe(true);
+    expect($("#btn-stop").style.display).toBe("");
+    expect($("#btn-start").style.display).toBe("none");
+  });
+});
+
+describe("createPanel - 开始/停止互斥", () => {
+  it("初始只显示「开始」", () => {
+    const { $ } = mount();
+
+    expect($("#btn-start").style.display).toBe("");
+    expect($("#btn-stop").style.display).toBe("none");
+  });
+
+  it("运行中只显示「停止」", () => {
+    const { handle, $ } = mount();
+
+    handle.setRunning(true);
+
+    expect($("#btn-start").style.display).toBe("none");
+    expect($("#btn-stop").style.display).toBe("");
+  });
+
+  it("停止后可切回「开始」", () => {
+    const { handle, $ } = mount();
+
+    handle.setRunning(true);
+    handle.setRunning(false);
+
+    expect($("#btn-start").style.display).toBe("");
+    expect($("#btn-stop").style.display).toBe("none");
+  });
+
+  it("运行中禁用模式切换，结束后恢复", () => {
+    const { handle, $ } = mount();
+    const select = $<HTMLSelectElement>("#ipt-engine");
+
+    handle.setRunning(true);
+    expect(select.disabled).toBe(true);
+
+    handle.setRunning(false);
+    expect(select.disabled).toBe(false);
   });
 });
 
 describe("createPanel - 交互", () => {
   it("回显已保存的引擎模式", () => {
-    const panel = createPanel(
-      { ...baseConfig, engineMode: "html2canvas" },
-      () => "第 1 页",
-      makeHandlers(),
-    );
-
-    expect((panel.querySelector("#ipt-engine") as HTMLSelectElement).value).toBe(
-      "html2canvas",
-    );
+    const { $ } = mount({ ...baseConfig, engineMode: "html2canvas" });
+    expect($<HTMLSelectElement>("#ipt-engine").value).toBe("html2canvas");
   });
 
   it("切换引擎时按模式映射 targetSelector 并回传配置", () => {
-    const handlers = makeHandlers();
-    const panel = createPanel(baseConfig, () => "第 1 页", handlers);
-    const select = panel.querySelector("#ipt-engine") as HTMLSelectElement;
+    const { $, handlers } = mount();
+    const select = $<HTMLSelectElement>("#ipt-engine");
 
     select.value = "html2canvas";
     select.dispatchEvent(new Event("change"));
@@ -85,13 +212,8 @@ describe("createPanel - 交互", () => {
   });
 
   it("切回 Canvas 时 targetSelector 指回 canvas 元素", () => {
-    const handlers = makeHandlers();
-    const panel = createPanel(
-      { ...baseConfig, engineMode: "html2canvas" },
-      () => "第 1 页",
-      handlers,
-    );
-    const select = panel.querySelector("#ipt-engine") as HTMLSelectElement;
+    const { $, handlers } = mount({ ...baseConfig, engineMode: "html2canvas" });
+    const select = $<HTMLSelectElement>("#ipt-engine");
 
     select.value = "canvas";
     select.dispatchEvent(new Event("change"));
@@ -101,10 +223,9 @@ describe("createPanel - 交互", () => {
   });
 
   it("开始前先保存配置再启动", () => {
-    const handlers = makeHandlers();
-    const panel = createPanel(baseConfig, () => "第 1 页", handlers);
+    const { $, handlers } = mount();
 
-    (panel.querySelector("#btn-start") as HTMLButtonElement).click();
+    $<HTMLButtonElement>("#btn-start").click();
 
     expect(handlers.onConfigChange).toHaveBeenCalledTimes(1);
     expect(handlers.onStart).toHaveBeenCalledTimes(1);
@@ -113,15 +234,17 @@ describe("createPanel - 交互", () => {
     );
   });
 
-  it("停止与重置各自触发对应回调", () => {
-    const handlers = makeHandlers();
-    const panel = createPanel(baseConfig, () => "第 1 页", handlers);
+  it("停止按钮触发 onStop", () => {
+    const { $, handlers } = mount();
 
-    (panel.querySelector("#btn-stop") as HTMLButtonElement).click();
-    (panel.querySelector("#btn-reset") as HTMLButtonElement).click();
+    $<HTMLButtonElement>("#btn-stop").click();
 
     expect(handlers.onStop).toHaveBeenCalledTimes(1);
-    expect(handlers.onReset).toHaveBeenCalledTimes(1);
+  });
+
+  it("不再有「重置」按钮（页码改为自动管理）", () => {
+    const { panel } = mount();
+    expect(panel.querySelector("#btn-reset")).toBeNull();
   });
 });
 

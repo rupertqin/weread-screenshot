@@ -5,6 +5,8 @@ import type { AppContext } from "../src/main";
 function makeCtx(): AppContext {
   return {
     isRunning: true,
+    pageNum: 1,
+    bookId: null,
     config: {
       nextSelector: "",
       chapterSelector: "",

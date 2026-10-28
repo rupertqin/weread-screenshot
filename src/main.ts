@@ -12,6 +12,7 @@ import {
   type StorageLike,
 } from "./config";
 import { getReaderInfo, type ReaderInfo } from "./reader";
+import { syncBook, currentHref } from "./session";
 import {
   downloadDataUrl,
   mergeImagesToCanvas,
@@ -26,15 +27,27 @@ import {
   type DrawableImage,
 } from "./image-load";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
-import { createPanel, updateStatus } from "./panel";
+import { createPanel, updateStatus, type PanelHandle } from "./panel";
 import { stitchFullPage } from "./stitch";
 import html2canvas from "html2canvas";
+
+/** 面板句柄（用于同步「开始/停止」按钮的显示状态） */
+let panelHandle: PanelHandle | null = null;
 
 export interface AppContext {
   storage: StorageLike;
   config: Config;
   isRunning: boolean;
   statusEl: HTMLElement | null;
+  /**
+   * 当前页码（内存态，不持久化）。
+   *
+   * 刷新页面会重新执行 init()，因此页码自然归 1；
+   * 在同一 SPA 会话内切换书籍时由 {@link syncBook} 检测并归 1。
+   */
+  pageNum: number;
+  /** 当前书籍 ID，用于检测换书 */
+  bookId: string | null;
 }
 
 export function createApp(): AppContext {
@@ -43,13 +56,15 @@ export function createApp(): AppContext {
     config: loadConfig(createGMStorage()),
     isRunning: false,
     statusEl: null,
+    pageNum: 1,
+    bookId: null,
   };
 }
 
 /** 结束任务并弹出总结 */
 export function finishTask(ctx: AppContext, reason: string): void {
   ctx.isRunning = false;
-  GM_setValue("isRunning", false);
+  panelHandle?.setRunning(false);
   removeStyle1CSS();
   updateStatus(ctx.statusEl, "已完成！" + reason);
 
@@ -59,7 +74,7 @@ export function finishTask(ctx: AppContext, reason: string): void {
   const endTime = Date.now();
 
   const durationSeconds = Math.round((endTime - startTime) / 1000);
-  const endPage = GM_getValue("pageCounter", 1) - 1;
+  const endPage = ctx.pageNum - 1;
   const reader = getReaderInfo(document, ctx.config.chapterSelector, ctx.config.nextSelector);
 
   const summaryMessage =
@@ -144,6 +159,9 @@ function collectAllCanvases(
 export async function executeStep(ctx: AppContext): Promise<void> {
   if (!ctx.isRunning) return;
 
+  // 运行途中若用户在同一页面内切了书，页码归 1
+  syncBook(ctx, currentHref());
+
   const reader = getReaderInfo(document, ctx.config.chapterSelector, ctx.config.nextSelector);
 
   // 章节模式：仅"原生 Canvas 引擎"需要先平滑滚动到底部触发整章 DOM 渲染。
@@ -165,7 +183,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
     return;
   }
 
-  let pageNum = GM_getValue("pageCounter", 1);
+  let pageNum = ctx.pageNum;
 
   const canvasList = collectCanvases(document.querySelector(".wr_canvasContainer") || document.body);
 
@@ -222,7 +240,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum}-${index + 1}.png`);
           await new Promise((r) => setTimeout(r, 300));
         }
-        GM_setValue("pageCounter", pageNum + 1);
+        ctx.pageNum = pageNum + 1;
         updateStatus(ctx.statusEl, `[Canvas] 已保存并合成第 ${pageNum} 章共 ${engineCanvases.length} 页`);
       } else {
         for (let index = 0; index < engineCanvases.length; index++) {
@@ -231,7 +249,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum + index}.png`);
           await new Promise((r) => setTimeout(r, 300));
         }
-        GM_setValue("pageCounter", pageNum + engineCanvases.length);
+        ctx.pageNum = pageNum + engineCanvases.length;
         updateStatus(ctx.statusEl, `[Canvas] 已自适应并合成当前视窗内的 ${engineCanvases.length} 页`);
       }
     } catch (err) {
@@ -239,7 +257,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
       console.error("原生 Canvas 合并导出失败:", err);
       updateStatus(ctx.statusEl, "Canvas 导出失败，跳过当前页继续...");
       // 页码仍前进，避免卡死在同一页
-      GM_setValue("pageCounter", pageNum + (reader.mode === "chapter" ? 1 : engineCanvases.length));
+      ctx.pageNum = pageNum + (reader.mode === "chapter" ? 1 : engineCanvases.length);
     }
   } else {
     // ---- 引擎二：html2canvas 模式 ----
@@ -338,7 +356,7 @@ export async function executeStep(ctx: AppContext): Promise<void> {
 
         const dataUrl = stitchedCanvas.toDataURL("image/png");
         downloadDataUrl(dataUrl, `screenshot_chapter_${pageNum}.png`);
-        GM_setValue("pageCounter", pageNum + 1);
+        ctx.pageNum = pageNum + 1;
         updateStatus(ctx.statusEl, `[html2canvas] 章节长图拼接完成，已保存第 ${pageNum} 章`);
         stitched = true;
       }
@@ -361,12 +379,12 @@ export async function executeStep(ctx: AppContext): Promise<void> {
           await new Promise((r) => setTimeout(r, 300));
           cropCanvasAndDownload(renderedCanvas!, halfWidth, 0, halfWidth, originalHeight, `screenshot_page_${pageNum + 1}.png`);
 
-          GM_setValue("pageCounter", pageNum + 2);
+          ctx.pageNum = pageNum + 2;
           updateStatus(ctx.statusEl, `[html2canvas] 水平双页切分已保存第 ${pageNum} 和 ${pageNum + 1} 页`);
         } else {
           const dataUrl = renderedCanvas!.toDataURL("image/png");
           downloadDataUrl(dataUrl, `screenshot_page_${pageNum}.png`);
-          GM_setValue("pageCounter", pageNum + 1);
+          ctx.pageNum = pageNum + 1;
           updateStatus(ctx.statusEl, `[html2canvas] 已成功导出整页/整章长图第 ${pageNum} 页`);
         }
       }
@@ -407,28 +425,24 @@ export function init(): void {
   const ctx = createApp();
   injectGlobalCSS();
 
+  // 记下进入页面时的书籍，用于后续检测换书
+  syncBook(ctx, currentHref());
+
   const panel = createPanel(
     ctx.config,
-    () => `第 ${GM_getValue("pageCounter", 1)} ${ctx.config.engineMode === "canvas" ? "页" : "章"}`,
+    () =>
+      `第 ${ctx.pageNum} ${ctx.config.engineMode === "canvas" ? "页" : "章"}`,
     {
       onStart: () => start(ctx),
       onStop: () => stop(ctx),
-      onReset: () => {
-        GM_setValue("pageCounter", 1);
-        updateStatus(ctx.statusEl, "页码已重置为 1");
-      },
       onConfigChange: (cfg) => {
         ctx.config = cfg;
         saveConfig(ctx.storage, cfg);
       },
     },
   );
-  ctx.statusEl = panel.querySelector("#txt-status");
-
-  if (GM_getValue("isRunning", false)) {
-    ctx.isRunning = true;
-    void executeStep(ctx);
-  }
+  panelHandle = panel;
+  ctx.statusEl = panel.el.querySelector("#txt-status");
 }
 
 export function start(ctx: AppContext): void {
@@ -436,11 +450,13 @@ export function start(ctx: AppContext): void {
     updateStatus(ctx.statusEl, "已在运行中，请勿重复点击");
     return;
   }
-  GM_setValue("session_startPage", GM_getValue("pageCounter", 1));
+  // 换书后从第 1 页重新开始
+  syncBook(ctx, currentHref());
+  GM_setValue("session_startPage", ctx.pageNum);
   GM_setValue("session_savedCount", 0);
   GM_setValue("session_startTime", Date.now());
-  GM_setValue("isRunning", true);
   ctx.isRunning = true;
+  panelHandle?.setRunning(true);
   updateStatus(ctx.statusEl, "正在启动...");
 
   // 每次启动都打印一次配置，便于确认当前生效的设置
@@ -450,8 +466,8 @@ export function start(ctx: AppContext): void {
 }
 
 export function stop(ctx: AppContext): void {
-  GM_setValue("isRunning", false);
   ctx.isRunning = false;
+  panelHandle?.setRunning(false);
   removeStyle1CSS();
   updateStatus(ctx.statusEl, "已暂停");
 }
