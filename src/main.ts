@@ -20,6 +20,8 @@ import {
   getMergedCanvasDataUrl,
   cropCanvasAndDownload,
   createCachedImageBaker,
+  prepareDrawableImages,
+  type DrawableImage,
 } from "./capture";
 import { getVisibleImages, simulateRealisticClick, injectGlobalCSS, injectStyle1CSS, removeStyle1CSS } from "./dom";
 import { createPanel, updateStatus } from "./panel";
@@ -173,14 +175,29 @@ export async function executeStep(ctx: AppContext): Promise<void> {
   }
   if (!ctx.isRunning) return;
 
-  // 获取可见插图，并进行 302 烘焙
+  // 获取可见插图
   const containerElement =
     document.querySelector<HTMLElement>(".renderTargetContainer") || document.body;
   const visibleImages = getVisibleImages(containerElement);
+  console.log(
+    `[插图] 容器=${containerElement.className || containerElement.tagName}，` +
+      `页面 img 总数=${containerElement.querySelectorAll("img").length}，` +
+      `判定可见=${visibleImages.length}`,
+  );
+
+  // 插图准备策略因引擎而异：
+  // - Canvas 引擎：fetch→Blob→ImageBitmap 得到"可安全绘制副本"，不改动页面 DOM
+  // - html2canvas 引擎：把页面 img 的 src 就地换成 base64，供 html2canvas 读取
+  let drawables: DrawableImage[] = [];
   let bakedSources: { el: HTMLImageElement; src: string }[] = [];
   if (visibleImages.length > 0) {
-    updateStatus(ctx.statusEl, "正在预解析插图并追踪 302 跳转...");
-    bakedSources = await bakeImagesToBase64(visibleImages);
+    if (ctx.config.engineMode === "canvas") {
+      updateStatus(ctx.statusEl, "正在准备插图...");
+      drawables = await prepareDrawableImages(visibleImages);
+    } else {
+      updateStatus(ctx.statusEl, "正在预解析插图并烘焙...");
+      bakedSources = await bakeImagesToBase64(visibleImages);
+    }
   }
 
   // ========== 核心：双引擎逻辑分支 ==========
@@ -190,30 +207,37 @@ export async function executeStep(ctx: AppContext): Promise<void> {
     const engineCanvases = collectAllCanvases(target, ctx.config.targetSelector);
     if (engineCanvases.length === 0) {
       finishTask(ctx, "原生 Canvas 模式下未找到可用的 Canvas 画布");
-      restoreImageSources(bakedSources);
       return;
     }
 
     updateStatus(ctx.statusEl, "正在通过原生 Canvas 进行碰撞合并导出...");
 
-    if (reader.mode === "chapter") {
-      for (let index = 0; index < engineCanvases.length; index++) {
-        const canvas = engineCanvases[index];
-        const mergedDataUrl = getMergedCanvasDataUrl(canvas, visibleImages);
-        downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum}-${index + 1}.png`);
-        await new Promise((r) => setTimeout(r, 300));
+    try {
+      if (reader.mode === "chapter") {
+        for (let index = 0; index < engineCanvases.length; index++) {
+          const canvas = engineCanvases[index];
+          const mergedDataUrl = getMergedCanvasDataUrl(canvas, drawables);
+          downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum}-${index + 1}.png`);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        GM_setValue("pageCounter", pageNum + 1);
+        updateStatus(ctx.statusEl, `[Canvas] 已保存并合成第 ${pageNum} 章共 ${engineCanvases.length} 页`);
+      } else {
+        for (let index = 0; index < engineCanvases.length; index++) {
+          const canvas = engineCanvases[index];
+          const mergedDataUrl = getMergedCanvasDataUrl(canvas, drawables);
+          downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum + index}.png`);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        GM_setValue("pageCounter", pageNum + engineCanvases.length);
+        updateStatus(ctx.statusEl, `[Canvas] 已自适应并合成当前视窗内的 ${engineCanvases.length} 页`);
       }
-      GM_setValue("pageCounter", pageNum + 1);
-      updateStatus(ctx.statusEl, `[Canvas] 已保存并合成第 ${pageNum} 章共 ${engineCanvases.length} 页`);
-    } else {
-      for (let index = 0; index < engineCanvases.length; index++) {
-        const canvas = engineCanvases[index];
-        const mergedDataUrl = getMergedCanvasDataUrl(canvas, visibleImages);
-        downloadDataUrl(mergedDataUrl, `screenshot_page_${pageNum + index}.png`);
-        await new Promise((r) => setTimeout(r, 300));
-      }
-      GM_setValue("pageCounter", pageNum + engineCanvases.length);
-      updateStatus(ctx.statusEl, `[Canvas] 已自适应并合成当前视窗内的 ${engineCanvases.length} 页`);
+    } catch (err) {
+      // 单页导出失败（如画布被污染导致 toDataURL 抛 SecurityError）不阻断整体流程
+      console.error("原生 Canvas 合并导出失败:", err);
+      updateStatus(ctx.statusEl, "Canvas 导出失败，跳过当前页继续...");
+      // 页码仍前进，避免卡死在同一页
+      GM_setValue("pageCounter", pageNum + (reader.mode === "chapter" ? 1 : engineCanvases.length));
     }
   } else {
     // ---- 引擎二：html2canvas 模式 ----

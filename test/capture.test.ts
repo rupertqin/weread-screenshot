@@ -109,11 +109,12 @@ describe("restoreImageSources - 还原 src", () => {
 
 describe("createCachedImageBaker - 插图烘焙缓存", () => {
   it("同一张图多次烘焙只 fetch 一次，复用 base64", async () => {
-    const baker = createCachedImageBaker();
     const blob = new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue({ ok: true, blob: async () => blob } as Response);
+    // 注入 fetch 时只走 fetch 路径（跳过 CORS），保证测试可预测
+    const baker = createCachedImageBaker(fetchMock as unknown as typeof fetch);
 
     // 第一次烘焙：src 换成 base64
     const img1 = new Image();
@@ -134,11 +135,11 @@ describe("createCachedImageBaker - 插图烘焙缓存", () => {
   });
 
   it("不同 src 的图片各自独立 fetch", async () => {
-    const baker = createCachedImageBaker();
     const blob = new Blob([new Uint8Array([1])], { type: "image/png" });
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue({ ok: true, blob: async () => blob } as Response);
+    const baker = createCachedImageBaker(fetchMock as unknown as typeof fetch);
 
     const a = new Image();
     a.src = "https://example.com/a.png";
