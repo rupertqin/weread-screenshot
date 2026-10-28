@@ -47,12 +47,51 @@ function ensureStyle(): void {
   margin-bottom: 8px;
   transition: margin-bottom 0.22s ease;
 }
+#${PANEL_ID} .asp-head-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
 #${PANEL_ID} .asp-title {
   flex: 0 0 auto;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.2px;
+}
+/* 状态指示点：只在收起时出现，用颜色区分运行中 / 已停止 */
+#${PANEL_ID} .asp-dot {
+  display: none;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #c0c4cc;
+  transition: background-color 0.2s ease;
+}
+#${PANEL_ID}.is-collapsed .asp-dot {
+  display: block;
+}
+#${PANEL_ID}.is-running .asp-dot {
+  background: #28a745;
+  animation: asp-dot-pulse 1.6s ease-out infinite;
+}
+@keyframes asp-dot-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.45);
+  }
+  70% {
+    box-shadow: 0 0 0 5px rgba(40, 167, 69, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #${PANEL_ID}.is-running .asp-dot {
+    animation: none;
+  }
 }
 #${PANEL_ID} .asp-toggle {
   display: flex;
@@ -183,7 +222,10 @@ export function createPanel(
   // 开始/停止互斥：同一时刻只显示一个
   div.innerHTML = `
     <div class="asp-head">
-      <span class="asp-title">截图导出</span>
+      <div class="asp-head-main">
+        <span class="asp-dot" aria-hidden="true"></span>
+        <span class="asp-title">截图导出</span>
+      </div>
       <button
         id="btn-collapse"
         class="asp-toggle"
@@ -232,13 +274,18 @@ export function createPanel(
     stopBtn.style.display = running ? "" : "none";
     // 运行中禁止改模式，避免中途切换导致 targetSelector 错配
     engineSelect.disabled = running;
+    // 收起后靠标题左侧的状态点区分运行中 / 已停止
+    div.classList.toggle("is-running", running);
   };
   setRunning(false);
 
-  const titleEl = div.querySelector(".asp-title") as HTMLElement;
+  const headMainEl = div.querySelector(".asp-head-main") as HTMLElement;
 
   /**
-   * 收起时把卡片宽度收到「标题实际宽度 + 收起按钮占位」，不再固定 220px。
+   * 收起时把卡片宽度收到「标题区实际宽度 + 收起按钮占位」，不再固定 220px。
+   *
+   * 标题区（`.asp-head-main`）含状态点与标题，量它就能自动把指示灯宽度算进去；
+   * 状态点在展开时是 `display:none`，不会影响展开态的宽度。
    *
    * 宽度写在内联样式上，配合 CSS 的 `transition: width` 才有动画；
    * 展开时清空内联宽度即可回落到样式表里的 220px。
@@ -246,8 +293,8 @@ export function createPanel(
    * 取不到测量值（如测试环境无布局）时不写宽度，退回样式表默认值。
    */
   const fitToTitle = (): void => {
-    const titleWidth = titleEl.getBoundingClientRect().width;
-    if (!titleWidth) {
+    const mainWidth = headMainEl.getBoundingClientRect().width;
+    if (!mainWidth) {
       div.style.width = "";
       return;
     }
@@ -256,7 +303,7 @@ export function createPanel(
     const gap = parseFloat(toggleStyle.marginLeft) || 8;
     const toggleWidth = collapseBtn.getBoundingClientRect().width || 20;
 
-    div.style.width = `${Math.ceil(titleWidth + gap + toggleWidth)}px`;
+    div.style.width = `${Math.ceil(mainWidth + gap + toggleWidth)}px`;
   };
 
   const setCollapsed = (collapsed: boolean): void => {

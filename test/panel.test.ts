@@ -96,13 +96,13 @@ describe("createPanel - 收起/展开", () => {
     expect(panel.querySelector(".asp-body")?.contains(head)).toBe(false);
   });
 
-  it("收起时宽度收到标题实际宽度，不保留固定宽度", () => {
+  it("收起时宽度收到标题区实际宽度，不保留固定宽度", () => {
     const { panel, $ } = mount();
-    const title = panel.querySelector(".asp-title") as HTMLElement;
+    const headMain = panel.querySelector(".asp-head-main") as HTMLElement;
     const toggle = $("#btn-collapse");
 
-    // happy-dom 无真实布局，这里注入测量值：标题 96px、按钮 20px
-    vi.spyOn(title, "getBoundingClientRect").mockReturnValue({
+    // happy-dom 无真实布局，这里注入测量值：标题区 96px、按钮 20px
+    vi.spyOn(headMain, "getBoundingClientRect").mockReturnValue({
       width: 96,
     } as DOMRect);
     vi.spyOn(toggle, "getBoundingClientRect").mockReturnValue({
@@ -111,7 +111,7 @@ describe("createPanel - 收起/展开", () => {
 
     $<HTMLButtonElement>("#btn-collapse").click();
 
-    // 96（标题）+ 8（间距）+ 20（按钮）= 124，而不是 220
+    // 96（标题区含状态点）+ 8（间距）+ 20（按钮）= 124，而不是 220
     expect(panel.style.width).toBe("124px");
   });
 
@@ -120,15 +120,15 @@ describe("createPanel - 收起/展开", () => {
 
     $<HTMLButtonElement>("#btn-collapse").click();
 
-    // 读不到标题宽度时不写内联宽度
+    // 读不到标题区宽度时不写内联宽度
     expect(panel.style.width).toBe("");
     expect(panel.classList.contains("is-collapsed")).toBe(true);
   });
 
   it("重新展开时清除内联宽度", () => {
     const { panel, $ } = mount();
-    const title = panel.querySelector(".asp-title") as HTMLElement;
-    vi.spyOn(title, "getBoundingClientRect").mockReturnValue({
+    const headMain = panel.querySelector(".asp-head-main") as HTMLElement;
+    vi.spyOn(headMain, "getBoundingClientRect").mockReturnValue({
       width: 96,
     } as DOMRect);
 
@@ -138,6 +138,43 @@ describe("createPanel - 收起/展开", () => {
 
     btn.click();
     expect(panel.style.width).toBe("");
+  });
+
+  it("状态点在标题左侧，且不在折叠主体内", () => {
+    const { panel } = mount();
+    const dot = panel.querySelector(".asp-dot");
+    const title = panel.querySelector(".asp-title");
+
+    expect(dot).not.toBeNull();
+    // DOM 顺序：状态点在标题之前（视觉上位于文字左侧）
+    expect(dot?.nextElementSibling).toBe(title);
+    // 收起时主体被隐藏，状态点必须留在标题栏里才能看见
+    expect(panel.querySelector(".asp-body")?.contains(dot as Node)).toBe(false);
+    expect(dot?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("运行中给面板加 is-running 标记（状态点变绿）", () => {
+    const { handle, panel } = mount();
+
+    expect(panel.classList.contains("is-running")).toBe(false);
+
+    handle.setRunning(true);
+    expect(panel.classList.contains("is-running")).toBe(true);
+
+    handle.setRunning(false);
+    expect(panel.classList.contains("is-running")).toBe(false);
+  });
+
+  it("收起后仍能通过状态点判断运行状态", () => {
+    const { handle, panel, $ } = mount();
+
+    handle.setRunning(true);
+    $<HTMLButtonElement>("#btn-collapse").click();
+
+    // 已收起（主体不可见），但状态标记仍在
+    expect(panel.classList.contains("is-collapsed")).toBe(true);
+    expect(panel.classList.contains("is-running")).toBe(true);
+    expect(panel.querySelector(".asp-dot")).not.toBeNull();
   });
 
   it("收起状态与运行状态互不干扰", () => {
