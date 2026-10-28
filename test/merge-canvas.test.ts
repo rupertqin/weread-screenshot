@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   getMergedCanvasDataUrl,
   mergeImagesToCanvas,
   isSafeToDraw,
   prepareDrawableImages,
+  clearImageBlobCache,
 } from "../src/capture";
 
 /** 创建一个带 mock 2d context 的 canvas，可记录 drawImage 调用 */
@@ -221,6 +222,11 @@ describe("isSafeToDraw - 可安全绘制判定", () => {
 });
 
 describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
+  beforeEach(() => {
+    // 会话缓存是模块级状态，逐用例清空避免互相干扰
+    clearImageBlobCache();
+  });
+
   it("fetch 成功时用 createImageBitmap 生成可安全绘制的位图", async () => {
     const el = new Image();
     el.src = "https://res.weread.qq.com/a.jpg";
@@ -354,7 +360,7 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
     vi.unstubAllGlobals();
   });
 
-  it("GM 返回空响应时回退 fetch，二者都失败则跳过该图", async () => {
+  it("GM 返回空响应属确定性失败：不重试、也不再退回浏览器 fetch", async () => {
     const el = new Image();
     el.src = "https://res.weread.qq.com/empty.jpg";
 
@@ -368,14 +374,14 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
       }) => {
         details.onload?.({
           status: 200,
-          response: new ArrayBuffer(0), // 0 字节，应判为失败
+          response: new ArrayBuffer(0), // 0 字节，确定性失败
           responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
         });
       },
     );
     vi.stubGlobal("GM_xmlhttpRequest", gmSpy);
 
-    // 浏览器 fetch 兜底也失败（真实运行中这里会出现 CORS error）
+    // GM 可用时不应再走浏览器 fetch（该路径必然被 CORS 拦，只会刷错误日志）
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockRejectedValue(new TypeError("Failed to fetch"));
@@ -384,19 +390,109 @@ describe("prepareDrawableImages - fetch → ImageBitmap 路径", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    // CORS 兜底超时设为 1ms，避免 happy-dom 下等待图片加载事件
     const result = await prepareDrawableImages([el], undefined, 1);
 
-    // GM 通道被调用并重试一次（共 2 次），都因空响应判为失败
-    expect(gmSpy).toHaveBeenCalledTimes(2);
-    // 失败后回退到浏览器 fetch
-    expect(fetchSpy).toHaveBeenCalled();
-    // 两种通道都失败 → 跳过该图，但整体不抛错
+    // 确定性失败只请求一次
+    expect(gmSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // 跳过该图，但整体不抛错
     expect(result.length).toBe(0);
 
     fetchSpy.mockRestore();
     consoleWarn.mockRestore();
     consoleError.mockRestore();
+    consoleLog.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("多张图受限并发获取，最多 4 路同时进行", async () => {
+    const imgs = Array.from({ length: 6 }, (_, i) => {
+      const el = new Image();
+      el.src = `https://res.weread.qq.com/p${i}.jpg`;
+      return el;
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const gmSpy = vi.fn(
+      (details: {
+        onload?: (res: {
+          status: number;
+          response: ArrayBuffer;
+          responseHeaders: string;
+        }) => void;
+      }) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // 稍作延迟，确保并发窗口能被观测到
+        setTimeout(() => {
+          inFlight -= 1;
+          details.onload?.({
+            status: 200,
+            response: new Uint8Array([1]).buffer,
+            responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
+          });
+        }, 5);
+      },
+    );
+    vi.stubGlobal("GM_xmlhttpRequest", gmSpy);
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 4, height: 4, close: () => {} })),
+    );
+
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+    const result = await prepareDrawableImages(imgs);
+
+    expect(gmSpy).toHaveBeenCalledTimes(6);
+    // 并发上限 4：同时进行的请求不超过 4 路，且确实发生了并发
+    expect(maxInFlight).toBe(4);
+    // 结果顺序与入参顺序一致
+    expect(result.length).toBe(6);
+    expect(result[0].el).toBe(imgs[0]);
+    expect(result[5].el).toBe(imgs[5]);
+
+    consoleLog.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("同一 URL 命中会话缓存，不重复发请求", async () => {
+    const url = "https://res.weread.qq.com/cached.jpg";
+
+    const gmSpy = vi.fn(
+      (details: {
+        onload?: (res: {
+          status: number;
+          response: ArrayBuffer;
+          responseHeaders: string;
+        }) => void;
+      }) => {
+        details.onload?.({
+          status: 200,
+          response: new Uint8Array([1, 2]).buffer,
+          responseHeaders: "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n",
+        });
+      },
+    );
+    vi.stubGlobal("GM_xmlhttpRequest", gmSpy);
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn(async () => ({ width: 8, height: 8, close: () => {} })),
+    );
+
+    const consoleLog = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const a = new Image();
+    a.src = url;
+    const b = new Image();
+    b.src = url;
+
+    const result = await prepareDrawableImages([a, b]);
+
+    // 两张同 URL 的图只应触发一次网络请求
+    expect(gmSpy).toHaveBeenCalledTimes(1);
+    expect(result.length).toBe(2);
+
     consoleLog.mockRestore();
     vi.unstubAllGlobals();
   });

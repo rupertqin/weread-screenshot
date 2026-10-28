@@ -73,6 +73,23 @@ interface GMResponseLike {
 }
 
 /** 发起一次 GM_xmlhttpRequest（可指定是否手动处理重定向） */
+/**
+ * 取图失败错误。
+ *
+ * `transient` 标记该错误是否值得重试：
+ *   - 网络错误 / 超时 → 抖动，重试有意义；
+ *   - HTTP 4xx、缺少 Location、0 字节 → 确定性失败，重试只会浪费一次请求。
+ */
+class ImageFetchError extends Error {
+  readonly transient: boolean;
+
+  constructor(message: string, transient = false) {
+    super(message);
+    this.name = "ImageFetchError";
+    this.transient = transient;
+  }
+}
+
 function gmOnce(
   gm: typeof GM_xmlhttpRequest,
   url: string,
@@ -102,9 +119,9 @@ function gmOnce(
             responseHeaders: res.responseHeaders,
           }),
         onerror: (res: GMCallbackRes) =>
-          reject(new Error(`网络错误 ${res?.error || ""}`.trim())),
-        ontimeout: () => reject(new Error("超时")),
-        onabort: () => reject(new Error("已中止")),
+          reject(new ImageFetchError(`网络错误 ${res?.error || ""}`.trim(), true)),
+        ontimeout: () => reject(new ImageFetchError("超时", true)),
+        onabort: () => reject(new ImageFetchError("已中止")),
       } as never);
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -132,7 +149,9 @@ function gmOnce(
 async function gmRequestBlob(url: string, timeoutMs = 30000): Promise<Blob> {
   const gmRequest = getGMRequest();
   if (!gmRequest) {
-    throw new Error("GM_xmlhttpRequest 不可用（请确认已授予 @grant 与 @connect）");
+    throw new ImageFetchError(
+      "GM_xmlhttpRequest 不可用（请确认已授予 @grant 与 @connect）",
+    );
   }
 
   let target = url;
@@ -143,33 +162,43 @@ async function gmRequestBlob(url: string, timeoutMs = 30000): Promise<Blob> {
     if (res.status >= 300 && res.status < 400) {
       const location = parseLocation(res.responseHeaders);
       if (!location) {
-        throw new Error(`重定向 ${res.status} 但响应缺少 Location`);
+        throw new ImageFetchError(`重定向 ${res.status} 但响应缺少 Location`);
       }
       target = new URL(location, target).href;
       continue;
     }
 
     if (res.status < 200 || res.status >= 300) {
-      throw new Error(`HTTP ${res.status}`);
+      throw new ImageFetchError(`HTTP ${res.status}`);
     }
 
     const buffer = res.response;
     if (!buffer || buffer.byteLength === 0) {
-      throw new Error("响应为空（0 字节）");
+      throw new ImageFetchError("响应为空（0 字节）");
     }
     const mime = parseContentType(res.responseHeaders) || "image/jpeg";
     return new Blob([buffer], { type: mime });
   }
 
-  throw new Error("重定向次数过多");
+  throw new ImageFetchError("重定向次数过多");
 }
 
 /**
- * 统一取图：返回图片二进制 Blob。
+ * 会话级图片缓存：同一张图跨页/跨章节只取一次。
  *
- * 优先级：注入的 fetch（测试） → GM_xmlhttpRequest（不受 CORS 限制） → 浏览器 fetch。
+ * 存的是 **Promise** 而不是 Blob：并发取图时，同一 URL 的多个请求会复用
+ * 同一个进行中的 Promise，既避免重复下载，也避免创建多份 Blob。
  */
-async function fetchImageBlob(
+const imageBlobCache = new Map<string, Promise<Blob>>();
+const IMAGE_BLOB_CACHE_LIMIT = 100;
+
+/** 清空图片缓存（测试用） */
+export function clearImageBlobCache(): void {
+  imageBlobCache.clear();
+}
+
+/** 取图核心逻辑（不含缓存） */
+async function loadImageBlob(
   src: string,
   fetchFn?: typeof fetch,
 ): Promise<Blob> {
@@ -189,34 +218,55 @@ async function fetchImageBlob(
   }
 
   // 1) GM_xmlhttpRequest：跨域首选（不受 CORS 限制）
-  //    图片请求链可能跨多个域名并带重定向，偶发失败时重试一次即可
-  let gmError = "";
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await gmRequestBlob(src);
-    } catch (err) {
-      gmError = (err as Error).message;
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 300));
-        continue;
+  if (getGMRequest()) {
+    let lastError = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await gmRequestBlob(src);
+      } catch (err) {
+        lastError = (err as Error).message;
+        const transient =
+          err instanceof ImageFetchError ? err.transient : false;
+        // 确定性失败重试没有意义，直接抛出，省一次请求
+        if (!transient) break;
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 300));
       }
-      console.warn("[插图] GM_xmlhttpRequest 失败：", gmError, src);
     }
+    console.warn("[插图] 取图失败：", lastError, src);
+    throw new ImageFetchError(lastError);
   }
 
-  // 2) 浏览器 fetch 兜底（此路径受 CORS 约束，失败会在控制台出现 CORS error）
-  try {
-    const res = await fetchWithTimeout(src);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.blob();
-  } catch (err) {
-    const fetchError = (err as Error).name === "AbortError"
-      ? "请求超时/被取消"
-      : (err as Error).message;
-    throw new Error(
-      `GM 与 fetch 均失败（GM: ${gmError || "未知"}；fetch: ${fetchError}）`,
-    );
+  // 2) 无 GM 通道时的浏览器 fetch 兜底（受 CORS 约束）
+  const res = await fetchWithTimeout(src);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
+}
+
+/**
+ * 统一取图：带会话缓存 + 并发去重。
+ *
+ * 注入 `fetchFn`（测试场景）时不使用缓存，保证用例之间互不干扰。
+ */
+function fetchImageBlob(src: string, fetchFn?: typeof fetch): Promise<Blob> {
+  if (fetchFn) return loadImageBlob(src, fetchFn);
+
+  const cached = imageBlobCache.get(src);
+  if (cached) return cached;
+
+  const task = loadImageBlob(src);
+  if (imageBlobCache.size >= IMAGE_BLOB_CACHE_LIMIT) {
+    // 简单 FIFO 淘汰，避免长会话内存无限增长
+    const oldest = imageBlobCache.keys().next().value;
+    if (oldest !== undefined) imageBlobCache.delete(oldest);
   }
+  imageBlobCache.set(src, task);
+
+  // 失败不缓存，下次还能重试
+  task.catch(() => {
+    if (imageBlobCache.get(src) === task) imageBlobCache.delete(src);
+  });
+
+  return task;
 }
 
 /** 触发下载（基于 DataURL 字符串），返回是否成功 */
@@ -384,8 +434,43 @@ async function srcToDrawable(
   }
 }
 
+/** 取图并发上限：兼顾速度，又不至于一次打太多请求 */
+const IMAGE_FETCH_CONCURRENCY = 4;
+
+/**
+ * 受限并发地处理一组任务，结果顺序与入参顺序一致。
+ *
+ * 用「共享游标 + N 个 worker」实现：每个 worker 取下一个索引执行，
+ * 因此任意时刻最多只有 `limit` 个任务在进行中。
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+
+  const run = async (): Promise<void> => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index], index);
+    }
+  };
+
+  const workerCount = Math.min(Math.max(limit, 1), items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => run()));
+
+  return results;
+}
+
 /**
  * 为一批页面插图准备"可绘制副本"。
+ *
+ * 多张图**受限并发**获取（默认 4 路），相比串行显著缩短等待时间；
+ * 同一 URL 的重复图片会复用同一个进行中的请求。
  *
  * 任何一张图失败只跳过该图，不阻断整体导出。
  *
@@ -397,36 +482,36 @@ export async function prepareDrawableImages(
   fetchFn?: typeof fetch,
   corsTimeoutMs?: number,
 ): Promise<DrawableImage[]> {
-  const result: DrawableImage[] = [];
-  let failed = 0;
-
   if (!fetchFn) {
     console.log(
       `[插图] 取图通道：GM_xmlhttpRequest=${
         getGMRequest() ? "可用" : "不可用"
       }，createImageBitmap=${
         typeof createImageBitmap === "function" ? "可用" : "不可用"
-      }`,
+      }，并发=${IMAGE_FETCH_CONCURRENCY}`,
     );
   }
 
-  for (const el of images) {
-    const src = el.src;
-    if (!src) continue;
+  const candidates = images.filter((el) => !!el.src);
 
-    // 已是 data:，直接复用
-    if (src.indexOf("data:") === 0) {
-      result.push({ el, img: el });
-      continue;
-    }
+  const prepared = await mapWithConcurrency(
+    candidates,
+    IMAGE_FETCH_CONCURRENCY,
+    async (el): Promise<DrawableImage | null> => {
+      const src = el.src;
 
-    const drawable = await srcToDrawable(src, fetchFn, corsTimeoutMs);
-    if (drawable) {
-      result.push({ el, img: drawable });
-    } else {
-      failed += 1;
-    }
-  }
+      // 已是 data:，直接复用
+      if (src.indexOf("data:") === 0) {
+        return { el, img: el };
+      }
+
+      const drawable = await srcToDrawable(src, fetchFn, corsTimeoutMs);
+      return drawable ? { el, img: drawable } : null;
+    },
+  );
+
+  const result = prepared.filter((item): item is DrawableImage => item !== null);
+  const failed = prepared.length - result.length;
 
   console.log(
     `[插图] 页面可见插图 ${images.length} 张，成功准备 ${result.length} 张，失败 ${failed} 张`,

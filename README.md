@@ -54,11 +54,10 @@ test/
 
 | 顺序 | 方式 | 说明 |
 |------|------|------|
-| 1 | **`GM_xmlhttpRequest` → arraybuffer → Blob** | **首选**。油猴 API 带 `@connect` 授权，**完全不受 CORS 限制**，也不会被跨域重定向 canceled。刻意用 `arraybuffer` 而非 `blob`：响应带 `Content-Disposition: attachment` 时，部分油猴实现的 blob 响应会为空，误判失败后会回退 fetch 并报 CORS error |
-| 2 | 浏览器 `fetch` → Blob | `GM_xmlhttpRequest` 不可用时兜底（带 30s 超时）。此路径**受 CORS 约束**，失败会在控制台出现 CORS error |
-| 3 | Blob → `createImageBitmap` | 得到位图，绘制时**绝不污染画布** |
-| 4 | Blob → dataURL → `Image` | 环境不支持 `createImageBitmap` 时降级 |
-| 5 | `loadImageWithCORS(src)` | 最后兜底：新建 `Image` + `crossOrigin="anonymous"` |
+| 1 | **`GM_xmlhttpRequest` + `redirect:"manual"` 逐跳** | **首选**。管理器（ScriptCat 等）会校验**每一次重定向的目标**，`@connect *` 也放不过，报 `redirected to a not whitelisted URL`。改成手动跟跳：每次只发一条不跳转的请求，自己读 `Location` 再发下一条 |
+| 2 | Blob → `createImageBitmap` | 得到位图，绘制时**绝不污染画布** |
+| 3 | Blob → dataURL → `Image` | 环境不支持 `createImageBitmap` 时降级 |
+| 4 | 浏览器 `fetch` → Blob | **仅在 GM 不可用**时使用（受 CORS 约束，多数情况必失败） |
 | — | 全部失败则**跳过该图** | 不阻断导出、不污染画布 |
 
 所需权限（已写入 userscript header）：
@@ -68,10 +67,16 @@ test/
 // @connect *
 ```
 
-> **为什么是 `@connect *`**：插图请求链是「`res.weread.qq.com` → 302 → 腾讯云 COS」，而 COS 在签名失效或节点异常时还会再 302 回源域，形成跨多个域名的重定向链。逐个枚举域名极易漏掉某一跳，油猴会报
-> `Request was redirected to a not whitelisted URL` 并直接拒绝请求（此时只能回退浏览器 `fetch`，而 `fetch` 受 CORS 限制必定失败）。
+> **为什么手动跟重定向**：插图链路是「`res.weread.qq.com` → 302 → 腾讯云 COS」。`res.weread.qq.com` 的 **302 响应没有 `Access-Control-Allow-Origin`**，按 Fetch 规范 CORS 请求要校验重定向链上的**每一个**响应，所以 `fetch` 和 `<img crossOrigin>` 都在第一跳就失败；而管理器又会拦跨域重定向。用 `redirect:"manual"` 把一次跨域跳转拆成两次单跳请求，两边都绕开了。
 >
-> 此外 `blob:` / `data:` 类型的图片走浏览器 `fetch`（同源资源，不受 CORS 限制）。
+> 另外 `blob:` / `data:` 属同源资源，直接走浏览器 `fetch`。
+
+**性能与请求量优化**：
+
+- **受限并发取图**（`mapWithConcurrency`，默认 4 路）：多张插图并行获取，结果顺序与入参一致；
+- **会话级 Promise 缓存**（`imageBlobCache`，上限 100 条 FIFO 淘汰）：同一张图跨页/跨章节只取一次，且并发时同一 URL 会复用**进行中的 Promise**，不会重复下载；
+- **只对瞬时错误重试**（网络错误 / 超时），`HTTP 4xx`、`0 字节`、`缺少 Location` 属确定性失败，直接放弃，不浪费第二次请求；失败结果不写入缓存，下次仍可重试；
+- **GM 可用时不再回退浏览器 `fetch`**：该路径几乎必然被 CORS 拒绝，只会刷一屏错误日志。
 
 **可绘制性校验** `isSafeToDraw`：`ImageBitmap` 恒安全；`HTMLImageElement` 仅当 `src` 为 `data:` 或 `crossOrigin="anonymous"` 时才允许 `drawImage`，从源头避免 `toDataURL` 抛 `SecurityError`。`ImageBitmap` 判定用鸭子类型（`width`/`height`/`close`）而非 `instanceof`，以兼容油猴沙箱的跨 realm 场景。
 
